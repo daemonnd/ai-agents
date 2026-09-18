@@ -12,7 +12,6 @@ from picoagents.llm import OpenAIChatCompletionClient
 from picoagents.orchestration import PlanBasedOrchestrator
 from picoagents.termination import MaxMessageTermination, TextMentionTermination
 from picoagents.types import OrchestrationResponse
-from picoagents.webui import serve
 
 
 def get_orchestrator():
@@ -108,4 +107,3 @@ async def main():
 
 if __name__ == "__main__":
     asyncio.run(main())
-
