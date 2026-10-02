@@ -5,7 +5,7 @@ from typing import Any, Self
 from datetime import datetime
 
 from openai.types.chat import ChatCompletionMessageToolCall
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 
 def math_tool(calculation: str) -> float | str:
@@ -17,9 +17,16 @@ def get_current_datetime() -> str:
 
 
 class Tool(BaseModel):
-    name: str
+    name: str = ""
     description: str
     to_exec: Callable
+
+    @model_validator(mode="before")
+    @classmethod
+    def set_default_name(cls, data: Any) -> Any:
+        if isinstance(data, dict) and not data.get("name"):
+            to_exec = data.get("to_exec")
+            data["name"] = getattr(to_exec, "__name__", str(to_exec))
 
     def get_name(self) -> str:
         return self.name

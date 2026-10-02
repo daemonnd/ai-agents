@@ -84,3 +84,8 @@ class OllamaChatCompletionClient(BaseChatCompletionClient):
                 availible_tools=tools,
             ),
         )
+
+    async def create_stream(
+        self, message: str, model: str, model_parameters: dict[str, Any] = {}
+    ) -> ChatCompletionResponse:
+        return await super().create_stream(message, model, model_parameters)

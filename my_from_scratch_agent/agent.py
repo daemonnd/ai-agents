@@ -1,10 +1,18 @@
 from abc import ABC
 from collections.abc import Callable
 
-from my_from_scratch_agent.chat_completion_client import BaseChatCompletionClient
+from my_from_scratch_agent.chat_completion_client import (
+    BaseChatCompletionClient,
+    OllamaChatCompletionClient,
+)
 from my_from_scratch_agent.context import prepare_context
 from my_from_scratch_agent.memory import Memory
-from my_from_scratch_agent.tools import Tool, ToolExecutionError
+from my_from_scratch_agent.tools import (
+    Tool,
+    ToolExecutionError,
+    get_current_datetime,
+    math_tool,
+)
 
 
 class BaseAgent(ABC):
@@ -67,4 +75,15 @@ class MathAgent(BaseAgent):
 
 
 if __name__ == "__main__":
-    ma = MathAgent().run(task="What is 500*10-70", history="")
+    model = OllamaChatCompletionClient(
+        system_prompt=SYSTEM_PROMPT,
+        model="qwen3.5:9b",
+    )
+    tool1 = Tool(description="Calculate simple math", to_exec=math_tool)
+    tool2 = Tool(
+        description="Get current local date and time", to_exec=get_current_datetime
+    )
+    memory = Memory(memories=[])
+    ma = MathAgent(model=model, availible_tools=[tool1, tool2], memory=memory).run(
+        task="What is 500*10-70", history=""
+    )
