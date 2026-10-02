@@ -1,9 +1,10 @@
 from collections.abc import Callable
 import json
 import inspect
-from typing import Any
+from typing import Any, Self
 from datetime import datetime
 
+from openai.types.chat import ChatCompletionMessageToolCall
 from pydantic import BaseModel, Field
 
 
@@ -33,9 +34,8 @@ class Tool(BaseModel):
         try:
             return self.to_exec(**kwargs), True
         except Exception as e:
-            return (
+            raise ToolExecutionError(
                 f"An Error when calling the tool occured: {type(e).__name__}: {e!s}",
-                False,
             )
 
     def _type_conversion(self, python_type: type) -> str | None:
@@ -74,3 +74,49 @@ class Tool(BaseModel):
 class ToolCall(BaseModel):
     name: str
     arguments: dict[str, Any]
+
+    @classmethod
+    def convert_from_openai(
+        cls,
+        openai_tool_calls: list[ChatCompletionMessageToolCall],
+        availible_tools: list[Tool],
+    ) -> list[ToolCall]:
+        unified_tool_call_list: list[ToolCall] = []
+        for tool_call in openai_tool_calls:
+            called_name = tool_call.function.name
+            arguments = tool_call.function.arguments
+            tool = ToolCall.find_tool(
+                called_name=called_name, available_tools=availible_tools
+            )
+            try:
+                arguments_dict: dict = json.loads(arguments)
+            except json.JSONDecodeError as e:
+                print(
+                    f"ERROR: Failed to decode tool calling arguments for tool call on {called_name}: the args: {arguments}: {e!s}"
+                )
+                raise
+            unified_tool_call_list.append(
+                ToolCall(name=tool_call.function.name, arguments=arguments_dict)
+            )
+        return unified_tool_call_list
+
+    @staticmethod
+    def find_tool(
+        called_name: str,
+        available_tools: list[Tool],
+    ) -> Tool:
+        for tool in available_tools:
+            if tool.name == called_name:
+                return tool
+
+        raise ToolNotFoundError(f"Tool '{called_name}' does not exist.")
+
+
+class ToolNotFoundError(Exception):
+    def __init__(self, *args: object) -> None:
+        super().__init__(*args)
+
+
+class ToolExecutionError(Exception):
+    def __init__(self, *args: object) -> None:
+        super().__init__(*args)
