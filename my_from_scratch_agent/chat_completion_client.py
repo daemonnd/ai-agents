@@ -8,6 +8,7 @@ from pydantic import BaseModel
 
 from openai import AsyncOpenAI
 
+from my_from_scratch_agent.messages import Message
 from my_from_scratch_agent.tools import Tool, ToolCall
 
 
@@ -27,7 +28,7 @@ class BaseChatCompletionClient(ABC):
     @abstractmethod
     async def create(
         self,
-        message: str,
+        messages: list[Message],
         tools: list[Tool],
         model_parameters: dict[str, Any] = {},
     ) -> ChatCompletionResponse:
@@ -55,7 +56,7 @@ class OllamaChatCompletionClient(BaseChatCompletionClient):
 
     async def create(
         self,
-        message: str,
+        messages: list[Message],
         tools: list[Tool],
         model_parameters: dict[str, Any] = {},
     ) -> ChatCompletionResponse:
@@ -66,10 +67,7 @@ class OllamaChatCompletionClient(BaseChatCompletionClient):
 
         response = await self.client.chat.completions.create(
             model=self.model,
-            messages=[
-                {"role": "system", "content": self.system_prompt},
-                {"role": "user", "content": message},
-            ],
+            messages=Message.convert_to_openai(messages=messages),
             tools=open_ai_tools,
             **model_params,
         )

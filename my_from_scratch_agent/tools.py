@@ -3,6 +3,7 @@ import json
 import inspect
 from typing import Any, Self
 from datetime import datetime
+from uuid import UUID, uuid7
 
 from openai.types.chat import ChatCompletionMessageToolCall
 from pydantic import BaseModel, Field, model_validator
@@ -27,6 +28,7 @@ class Tool(BaseModel):
         if isinstance(data, dict) and not data.get("name"):
             to_exec = data.get("to_exec")
             data["name"] = getattr(to_exec, "__name__", str(to_exec))
+            return data
 
     def get_name(self) -> str:
         return self.name
@@ -34,12 +36,12 @@ class Tool(BaseModel):
     def get_description(self) -> str:
         return self.description
 
-    async def execute_tool(self, **kwargs) -> tuple[Any, bool]:
+    async def execute_tool(self, **kwargs) -> Any:
         """
-        Returns expected output, True if the tool call succeeded, None, False if it failed
+        Returns expected output if tool call succeeded, raises ToolExecutionError if it failed
         """
         try:
-            return self.to_exec(**kwargs), True
+            return self.to_exec(**kwargs)
         except Exception as e:
             raise ToolExecutionError(
                 f"An Error when calling the tool occured: {type(e).__name__}: {e!s}",
@@ -73,7 +75,11 @@ class Tool(BaseModel):
                 "type": self._type_conversion(parameters.annotation)
             }
             if parameters.default is inspect._empty:
-                result["function"]["parameters"]["required"].append(name)
+                try:
+                    result["function"]["parameters"]["required"].append(name)
+                except KeyError:
+                    result["function"]["parameters"]["required"] = []
+                    result["function"]["parameters"]["required"].append(name)
 
         return result
 
@@ -81,6 +87,7 @@ class Tool(BaseModel):
 class ToolCall(BaseModel):
     name: str
     arguments: dict[str, Any]
+    id: str
 
     @classmethod
     def convert_from_openai(
@@ -103,7 +110,11 @@ class ToolCall(BaseModel):
                 )
                 raise
             unified_tool_call_list.append(
-                ToolCall(name=tool_call.function.name, arguments=arguments_dict)
+                ToolCall(
+                    name=tool_call.function.name,
+                    arguments=arguments_dict,
+                    id=tool_call.id,
+                )
             )
         return unified_tool_call_list
 
