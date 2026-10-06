@@ -5,6 +5,7 @@ This example demonstrates how the orchestrator creates an execution plan
 with agent assignments and tracks step progress with retry logic.
 """
 
+from picoagents.orchestration._plan import PlanBasedOrchestrator
 import asyncio
 
 from picoagents import Agent
@@ -14,7 +15,7 @@ from picoagents.termination import MaxMessageTermination, TextMentionTermination
 from picoagents.types import OrchestrationResponse
 
 
-def get_orchestrator():
+def get_orchestrator() -> PlanBasedOrchestrator:
     """Create plan-based orchestrator for research and writing tasks."""
 
     client = OpenAIChatCompletionClient(

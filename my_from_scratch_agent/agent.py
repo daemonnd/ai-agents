@@ -1,9 +1,11 @@
 from abc import ABC
 import asyncio
+from random import randint
 from rich import print
 
 from my_from_scratch_agent.chat_completion_client import (
     BaseChatCompletionClient,
+    ChatCompletionResponse,
     OllamaChatCompletionClient,
 )
 from my_from_scratch_agent.messages import (
@@ -15,8 +17,10 @@ from my_from_scratch_agent.messages import (
 )
 from my_from_scratch_agent.tools import (
     Tool,
+    ToolCall,
     ToolExecutionError,
     get_current_datetime,
+    get_weather,
     math_tool,
 )
 from my_from_scratch_agent.memory import Memory
@@ -34,61 +38,71 @@ class BaseAgent(ABC):
         self.availible_tools = availible_tools
         self.memory = memory
 
-    async def run(self, task: str, history: list[Message]) -> str:
+    async def run(self, task: str) -> Memory:
+
         context: list[Message] = [
             SystemMessage(content=SYSTEM_PROMPT),
-            *history,
+            *self.memory.messages,
             UserMessage(content=task),
         ]
         print(f"[red]Task: {task}[/red]")
         while True:
-            print(f"\n[cyan]current context: {context}[/cyan]")
+            print("\n[cyan]current context: [/cyan]")
+            for message in context:
+                print(message)
             response = await self.model.create(context, tools=self.availible_tools)
             context.append(
                 AssistantMessage(
                     content=response.response_message, tool_calls=response.tool_calls
                 )
             )
-            print(f"\n[green]Model response: {response}[/green]")
+            print("\n[green]Model response:[/green]")
+            print(response)
+            if not response.response_message and not response.tool_calls:
+                continue
             if response.tool_calls:  # if the ai wants to call a tool
+                tools_to_execute = []
                 for (
                     called_tool
                 ) in response.tool_calls:  # iterate through the tools the ai calls
-                    for t in (
-                        self.availible_tools
-                    ):  # iterate through the availible tools to find a match
-                        if t.get_name() == called_tool.name:
-                            try:
-                                tool_call_result = await t.execute_tool(
-                                    **called_tool.arguments
-                                )
-                                print(
-                                    f"[yellow]\nExecuted tool '{t.get_name()}' successfully. "
-                                    f"Result: {tool_call_result}. "
-                                    f"arguments: {called_tool.arguments}[/yellow]"
-                                )
-                                context.append(
-                                    ToolMessage(
-                                        tool_name=t.get_name(),
-                                        result=str(tool_call_result),
-                                        success=True,
-                                        tool_call_id=called_tool.id,
-                                    )
-                                )
+                    for tool in self.availible_tools:
+                        tools_to_execute.append(
+                            tool.execute_tool(**called_tool.arguments)
+                        )
+                results = await asyncio.gather(*tools_to_execute)
 
-                            except ToolExecutionError as e:
-                                print(
-                                    f"[red][bold]\nToolExecutionError: {e!s}[/red][/bold]"
-                                )
-                                context.append(
-                                    ToolMessage(
-                                        tool_name=t.get_name(),
-                                        result=str(e),
-                                        success=False,
-                                    )
-                                )
-            else:
-                return f"[magenta]Final response: {response.response_message}[/magenta]"
+                try:
+                    tool_call_result = await t.execute_tool(**called_tool.arguments)
+                    print(
+                        f"[yellow]\nExecuted tool '{t.get_name()}' successfully. "
+                        f"Result: {tool_call_result}. "
+                        f"arguments: {called_tool.arguments}[/yellow]"
+                    )
+                    context.append(
+                        ToolMessage(
+                            tool_name=t.get_name(),
+                            result=str(tool_call_result),
+                            success=True,
+                            tool_call_id=called_tool.id,
+                        )
+                    )
+
+                except ToolExecutionError as e:
+                    print(f"[red][bold]\nToolExecutionError: {e!s}[/red][/bold]")
+                    context.append(
+                        ToolMessage(
+                            tool_call_id=called_tool.id,
+                            tool_name=t.get_name(),
+                            result=str(e),
+                            success=False,
+                        )
+                    )
+            else:  # no tool, not empty message: AI wants to reply with a result
+                self.memory.clear()
+                self.memory.append_multiple_messages(
+                    context[1:]
+                )  # appends everything to memory apart from the system message
+                return self.memory
 
     async def run_stream(self, message: str) -> str:
         pass
@@ -112,7 +126,7 @@ async def main():
         system_prompt=SYSTEM_PROMPT,
         model="qwen3.5:9b",
     )
-    memory = Memory(memories=[])
+    memory = Memory()
     agent = MyAgent(
         model=model,
         availible_tools=[
@@ -121,14 +135,21 @@ async def main():
                 description="Get current local date and time",
                 to_exec=get_current_datetime,
             ),
+            Tool(
+                description="Get real-time weather info about any location",
+                to_exec=get_weather,
+            ),
         ],
         memory=memory,
     )
     print(f"Starting agent with model {model.model}")
-    result = await agent.run(
-        task="What is 500*10-70, and which day is it today?", history=[]
-    )
-    print(result)
+    while True:
+        task: str = input("User: ")
+        if task in ["quit", "exit"]:
+            print("exiting...")
+            break
+        result = await agent.run(task=task)
+        print(f"[magenta]Final Response:\n{result.messages[-1].content}")
 
 
 if __name__ == "__main__":

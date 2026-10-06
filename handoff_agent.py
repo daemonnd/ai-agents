@@ -3,6 +3,7 @@ Agent as Tool composition example.
 Shows how specialized agents can be used as tools by coordinator agents.
 """
 
+from picoagents.agents._agent import Agent
 import asyncio
 
 from picoagents import Agent, OpenAIChatCompletionClient
@@ -22,7 +23,7 @@ def analyze_data(data: str) -> str:
 model_client = OpenAIChatCompletionClient(model="qwen3.5:9b")
 
 
-def tool_agents():
+def tool_agents() -> tuple[Agent, Agent]:
     """Create specialized agents to be used as tools."""
     # Specialized weather agent
     weather_agent = Agent(

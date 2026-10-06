@@ -1,7 +1,7 @@
 import json
 from typing import Self
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from my_from_scratch_agent.tools import ToolCall
 
@@ -56,7 +56,7 @@ class UserMessage(Message):
 
 class AssistantMessage(Message):
     content: str | None = None
-    tool_calls: list[ToolCall] = []
+    tool_calls: list[ToolCall] = Field(default_factory=list)
 
 
 class ToolMessage(Message):

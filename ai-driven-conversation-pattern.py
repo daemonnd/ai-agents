@@ -6,6 +6,7 @@ This example demonstrates intelligent agent selection where an LLM
 chooses which agent should respond next based on conversation context.
 """
 
+from picoagents.orchestration._ai import AIOrchestrator
 import asyncio
 
 from picoagents import Agent
@@ -15,7 +16,7 @@ from picoagents.termination import MaxMessageTermination, TextMentionTermination
 from picoagents.types import OrchestrationResponse
 
 
-def get_orchestrator():
+def get_orchestrator() -> AIOrchestrator:
     """Create AI-driven orchestrator for writing tasks."""
 
     client = OpenAIChatCompletionClient(model="qwen3.5:9b")

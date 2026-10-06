@@ -8,6 +8,7 @@ Run with Web UI:
     python examples/orchestration/round-robin.py --web
 """
 
+from picoagents.orchestration._round_robin import RoundRobinOrchestrator
 import argparse
 import asyncio
 
@@ -17,7 +18,7 @@ from picoagents.orchestration import RoundRobinOrchestrator
 from picoagents.termination import MaxMessageTermination, TextMentionTermination
 
 
-def get_orchestrator():
+def get_orchestrator() -> RoundRobinOrchestrator:
     """Demonstrate round-robin conversation flow."""
 
     client = OpenAIChatCompletionClient(

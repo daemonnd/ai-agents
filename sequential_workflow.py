@@ -2,6 +2,7 @@
 Simple sequential workflow example: double -> square -> add_ten
 """
 
+from picoagents.workflow.core._workflow import Workflow
 import asyncio
 from typing import Any
 from pydantic import BaseModel
@@ -109,7 +110,7 @@ async def add_ten(input_data: NumberOutput, context: Context) -> NumberOutput:
     return NumberOutput(result=result)
 
 
-def get_workflow():
+def get_workflow() -> Workflow:
     """Create a sequential workflow: double -> square -> add_ten."""
     # Create steps
     double_step = FunctionStep(

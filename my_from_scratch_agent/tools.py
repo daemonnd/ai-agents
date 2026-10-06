@@ -1,20 +1,27 @@
+import asyncio
 from collections.abc import Callable
 import json
 import inspect
-from typing import Any, Self
+from typing import Any
 from datetime import datetime
-from uuid import UUID, uuid7
 
 from openai.types.chat import ChatCompletionMessageToolCall
 from pydantic import BaseModel, Field, model_validator
 
 
-def math_tool(calculation: str) -> float | str:
+async def math_tool(calculation: str) -> float | str:
+    await asyncio.sleep(4)
     return eval(calculation)
 
 
-def get_current_datetime() -> str:
+async def get_current_datetime() -> str:
+    await asyncio.sleep(2)
     return datetime.now().strftime("%A, %B, %d, %Y, at %I:%M %p")
+
+
+async def get_weather(location: str) -> str:
+    await asyncio.sleep(3)
+    return f"The weather in {location} is sunny"
 
 
 class Tool(BaseModel):
@@ -41,7 +48,7 @@ class Tool(BaseModel):
         Returns expected output if tool call succeeded, raises ToolExecutionError if it failed
         """
         try:
-            return self.to_exec(**kwargs)
+            return await self.to_exec(**kwargs)
         except Exception as e:
             raise ToolExecutionError(
                 f"An Error when calling the tool occured: {type(e).__name__}: {e!s}",
