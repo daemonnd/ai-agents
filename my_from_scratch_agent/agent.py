@@ -1,6 +1,7 @@
-from abc import ABC
+from collections.abc import Coroutine
 import asyncio
-from random import randint
+from abc import ABC
+
 from rich import print
 
 from my_from_scratch_agent.chat_completion_client import (
@@ -8,6 +9,7 @@ from my_from_scratch_agent.chat_completion_client import (
     ChatCompletionResponse,
     OllamaChatCompletionClient,
 )
+from my_from_scratch_agent.memory import Memory
 from my_from_scratch_agent.messages import (
     AssistantMessage,
     Message,
@@ -23,7 +25,6 @@ from my_from_scratch_agent.tools import (
     get_weather,
     math_tool,
 )
-from my_from_scratch_agent.memory import Memory
 
 
 class BaseAgent(ABC):
@@ -50,7 +51,11 @@ class BaseAgent(ABC):
             print("\n[cyan]current context: [/cyan]")
             for message in context:
                 print(message)
-            response = await self.model.create(context, tools=self.availible_tools)
+            response: ChatCompletionResponse = await self.model.create(
+                context, tools=self.availible_tools
+            )
+            if not response.response_message and not response.tool_calls:
+                continue
             context.append(
                 AssistantMessage(
                     content=response.response_message, tool_calls=response.tool_calls
@@ -58,45 +63,16 @@ class BaseAgent(ABC):
             )
             print("\n[green]Model response:[/green]")
             print(response)
-            if not response.response_message and not response.tool_calls:
-                continue
             if response.tool_calls:  # if the ai wants to call a tool
-                tools_to_execute = []
-                for (
-                    called_tool
-                ) in response.tool_calls:  # iterate through the tools the ai calls
-                    for tool in self.availible_tools:
-                        tools_to_execute.append(
-                            tool.execute_tool(**called_tool.arguments)
-                        )
-                results = await asyncio.gather(*tools_to_execute)
+                tools_to_execute: list[Coroutine] = [
+                    self._execute_tool_call(called_tool)
+                    for called_tool in response.tool_calls
+                ]
+                tool_messages: list[ToolMessage] = await asyncio.gather(
+                    *tools_to_execute
+                )
+                context.extend(tool_messages)
 
-                try:
-                    tool_call_result = await t.execute_tool(**called_tool.arguments)
-                    print(
-                        f"[yellow]\nExecuted tool '{t.get_name()}' successfully. "
-                        f"Result: {tool_call_result}. "
-                        f"arguments: {called_tool.arguments}[/yellow]"
-                    )
-                    context.append(
-                        ToolMessage(
-                            tool_name=t.get_name(),
-                            result=str(tool_call_result),
-                            success=True,
-                            tool_call_id=called_tool.id,
-                        )
-                    )
-
-                except ToolExecutionError as e:
-                    print(f"[red][bold]\nToolExecutionError: {e!s}[/red][/bold]")
-                    context.append(
-                        ToolMessage(
-                            tool_call_id=called_tool.id,
-                            tool_name=t.get_name(),
-                            result=str(e),
-                            success=False,
-                        )
-                    )
             else:  # no tool, not empty message: AI wants to reply with a result
                 self.memory.clear()
                 self.memory.append_multiple_messages(
@@ -106,6 +82,34 @@ class BaseAgent(ABC):
 
     async def run_stream(self, message: str) -> str:
         pass
+
+    async def _execute_tool_call(self, called_tool: ToolCall) -> ToolMessage:
+        for tool in self.availible_tools:
+            if tool.get_name() == called_tool.name:
+                print(f"Trying to execute tool {tool.get_name()}...")
+                try:
+                    result = await tool.execute_tool(**called_tool.arguments)
+                    print(
+                        f"[yellow]\nExecuted tool '{tool.get_name()}' successfully. "
+                        f"Result: {result}. "
+                        f"arguments: {called_tool.arguments}[/yellow]"
+                    )
+                    return ToolMessage(
+                        tool_name=tool.get_name(),
+                        result=str(result),
+                        tool_call=called_tool,
+                        success=True,
+                        tool_call_id=called_tool.id,
+                    )
+                except ToolExecutionError as e:
+                    print(f"[red][bold]\nToolExecutionError: {e!s}[/red][/bold]")
+                    return ToolMessage(
+                        tool_name=tool.get_name(),
+                        result=f"ToolExecutionError: {e!s}",
+                        tool_call_id=called_tool.id,
+                        success=False,
+                    )
+        raise ValueError(f"Unknown tool: {called_tool.name}")
 
 
 SYSTEM_PROMPT = "You are a helpful assistant. Use tools when appropriate."

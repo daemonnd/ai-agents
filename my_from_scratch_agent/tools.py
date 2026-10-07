@@ -10,17 +10,17 @@ from pydantic import BaseModel, Field, model_validator
 
 
 async def math_tool(calculation: str) -> float | str:
-    await asyncio.sleep(4)
+    await asyncio.sleep(8)
     return eval(calculation)
 
 
 async def get_current_datetime() -> str:
-    await asyncio.sleep(2)
+    await asyncio.sleep(5)
     return datetime.now().strftime("%A, %B, %d, %Y, at %I:%M %p")
 
 
 async def get_weather(location: str) -> str:
-    await asyncio.sleep(3)
+    await asyncio.sleep(9)
     return f"The weather in {location} is sunny"
 
 
