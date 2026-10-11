@@ -1,3 +1,4 @@
+from my_from_scratch_agent.cancellation import OperationCancelled
 from asyncio import Event
 import asyncio
 from abc import ABC, abstractmethod
@@ -76,7 +77,7 @@ class OllamaChatCompletionClient(BaseChatCompletionClient):
             self.client.chat.completions.create(
                 model=self.model,
                 messages=Message.convert_to_openai(messages=messages),
-                tools=open_ai_tools,
+                # tools=open_ai_tools,
                 **model_params,
             )
         )
@@ -89,6 +90,10 @@ class OllamaChatCompletionClient(BaseChatCompletionClient):
         )
         # convert open ai tool calls to the tool call objects from this project
 
+        if cancellation_task in done:
+            request_task.cancel()
+            raise OperationCancelled()
+        response = request_task.result()
         return ChatCompletionResponse(
             response_message=response.choices[0].message.content,
             model_parameters=model_params,
