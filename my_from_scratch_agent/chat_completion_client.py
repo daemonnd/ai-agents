@@ -1,13 +1,18 @@
+from asyncio import Event
+import asyncio
 from abc import ABC, abstractmethod
+from asyncio import Task
+from collections.abc import Coroutine
 from typing import Any
+
+from openai import AsyncOpenAI
 from openai.types.chat import ChatCompletionMessageToolCall, ChatCompletionToolParam
 from openai.types.chat.chat_completion_tool_param import FunctionDefinition
 from openai.types.chat.completion_create_params import Function
 from openai.types.shared_params.function_parameters import FunctionParameters
 from pydantic import BaseModel
 
-from openai import AsyncOpenAI
-
+from my_from_scratch_agent.cancellation import CancellationToken
 from my_from_scratch_agent.messages import Message
 from my_from_scratch_agent.tools import Tool, ToolCall
 
@@ -30,6 +35,7 @@ class BaseChatCompletionClient(ABC):
         self,
         messages: list[Message],
         tools: list[Tool],
+        cancellation_token: CancellationToken,
         model_parameters: dict[str, Any] = {},
     ) -> ChatCompletionResponse:
         pass
@@ -58,6 +64,7 @@ class OllamaChatCompletionClient(BaseChatCompletionClient):
         self,
         messages: list[Message],
         tools: list[Tool],
+        cancellation_token: CancellationToken,
         model_parameters: dict[str, Any] = {},
     ) -> ChatCompletionResponse:
         model_params = model_parameters or {}
@@ -65,13 +72,21 @@ class OllamaChatCompletionClient(BaseChatCompletionClient):
         for tool in tools:
             open_ai_tools.append(tool.convert_to_openai())
 
-        response = await self.client.chat.completions.create(
-            model=self.model,
-            messages=Message.convert_to_openai(messages=messages),
-            tools=open_ai_tools,
-            **model_params,
+        request_task: Task = asyncio.create_task(
+            self.client.chat.completions.create(
+                model=self.model,
+                messages=Message.convert_to_openai(messages=messages),
+                tools=open_ai_tools,
+                **model_params,
+            )
+        )
+        cancellation_task = asyncio.create_task(
+            cancellation_token.wait_for_cancellation()
         )
 
+        done, pending = await asyncio.wait(
+            [request_task, cancellation_task], return_when=(asyncio.FIRST_COMPLETED)
+        )
         # convert open ai tool calls to the tool call objects from this project
 
         return ChatCompletionResponse(

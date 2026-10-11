@@ -1,3 +1,4 @@
+from my_from_scratch_agent.cancellation import CancellationToken
 from collections.abc import Coroutine
 import asyncio
 from abc import ABC
@@ -33,14 +34,15 @@ class BaseAgent(ABC):
         model: BaseChatCompletionClient,
         availible_tools: list[Tool],
         memory: Memory,
+        cancellation_token: CancellationToken,
     ) -> None:
         super().__init__()
         self.model = model
         self.availible_tools = availible_tools
         self.memory = memory
+        self.cancellation_token = cancellation_token
 
     async def run(self, task: str) -> Memory:
-
         context: list[Message] = [
             SystemMessage(content=SYSTEM_PROMPT),
             *self.memory.messages,
@@ -48,12 +50,14 @@ class BaseAgent(ABC):
         ]
         print(f"[red]Task: {task}[/red]")
         while True:
+            self.cancellation_token.check_cancellation()
             print("\n[cyan]current context: [/cyan]")
             for message in context:
                 print(message)
             response: ChatCompletionResponse = await self.model.create(
                 context, tools=self.availible_tools
             )
+            self.cancellation_token.check_cancellation()  # check cancellation token after model replied
             if not response.response_message and not response.tool_calls:
                 continue
             context.append(
@@ -109,6 +113,8 @@ class BaseAgent(ABC):
                         tool_call_id=called_tool.id,
                         success=False,
                     )
+                finally:  # the tool executed, so check for cancellation again
+                    self.cancellation_token.check_cancellation()
         raise ValueError(f"Unknown tool: {called_tool.name}")
 
 
@@ -121,8 +127,9 @@ class MyAgent(BaseAgent):
         model: BaseChatCompletionClient,
         availible_tools: list[Tool],
         memory: Memory,
+        cancellation_token: CancellationToken,
     ) -> None:
-        super().__init__(model, availible_tools, memory)
+        super().__init__(model, availible_tools, memory, cancellation_token)
 
 
 async def main():
@@ -131,6 +138,7 @@ async def main():
         model="qwen3.5:9b",
     )
     memory = Memory()
+    cancelation_token = CancellationToken()
     agent = MyAgent(
         model=model,
         availible_tools=[
@@ -145,6 +153,7 @@ async def main():
             ),
         ],
         memory=memory,
+        cancellation_token=cancellation_token,
     )
     print(f"Starting agent with model {model.model}")
     while True:
