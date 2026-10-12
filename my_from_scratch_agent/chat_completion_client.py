@@ -77,7 +77,7 @@ class OllamaChatCompletionClient(BaseChatCompletionClient):
             self.client.chat.completions.create(
                 model=self.model,
                 messages=Message.convert_to_openai(messages=messages),
-                # tools=open_ai_tools,
+                tools=open_ai_tools,
                 **model_params,
             )
         )

@@ -10,6 +10,9 @@ class CancellationToken:
     def set_cancellation(self) -> None:
         self.cancellation = True
 
+    def reset_cancellation(self) -> None:
+        self.cancellation = False
+
     def get_cancellation(self) -> bool:
         return self.cancellation
 

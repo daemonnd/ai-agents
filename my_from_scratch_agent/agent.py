@@ -1,10 +1,12 @@
-from my_from_scratch_agent.cancellation import CancellationToken
-from collections.abc import Coroutine
 import asyncio
+import signal
 from abc import ABC
+from asyncio import AbstractEventLoop, Task
+from collections.abc import Coroutine
 
 from rich import print
 
+from my_from_scratch_agent.cancellation import CancellationToken, OperationCancelled
 from my_from_scratch_agent.chat_completion_client import (
     BaseChatCompletionClient,
     ChatCompletionResponse,
@@ -49,40 +51,59 @@ class BaseAgent(ABC):
             UserMessage(content=task),
         ]
         print(f"[red]Task: {task}[/red]")
-        while True:
-            self.cancellation_token.check_cancellation()
-            print("\n[cyan]current context: [/cyan]")
-            for message in context:
-                print(message)
-            response: ChatCompletionResponse = await self.model.create(
-                context, tools=self.availible_tools
-            )
-            self.cancellation_token.check_cancellation()  # check cancellation token after model replied
-            if not response.response_message and not response.tool_calls:
-                continue
-            context.append(
-                AssistantMessage(
-                    content=response.response_message, tool_calls=response.tool_calls
+        try:
+            while True:
+                self.cancellation_token.check_cancellation()
+                print("\n[cyan]current context: [/cyan]")
+                for message in context:
+                    print(message)
+                response: ChatCompletionResponse = await self.model.create(
+                    context,
+                    tools=self.availible_tools,
+                    cancellation_token=self.cancellation_token,
                 )
-            )
-            print("\n[green]Model response:[/green]")
-            print(response)
-            if response.tool_calls:  # if the ai wants to call a tool
-                tools_to_execute: list[Coroutine] = [
-                    self._execute_tool_call(called_tool)
-                    for called_tool in response.tool_calls
-                ]
-                tool_messages: list[ToolMessage] = await asyncio.gather(
-                    *tools_to_execute
+                self.cancellation_token.check_cancellation()  # check cancellation token after model replied
+                if not response.response_message and not response.tool_calls:
+                    continue
+                context.append(
+                    AssistantMessage(
+                        content=response.response_message,
+                        tool_calls=response.tool_calls,
+                    )
                 )
-                context.extend(tool_messages)
+                print("\n[green]Model response:[/green]")
+                print(response)
+                if response.tool_calls:  # if the ai wants to call a tool
+                    tools_to_execute: list[Task] = []
 
-            else:  # no tool, not empty message: AI wants to reply with a result
-                self.memory.clear()
-                self.memory.append_multiple_messages(
-                    context[1:]
-                )  # appends everything to memory apart from the system message
-                return self.memory
+                    tools_to_execute = [
+                        asyncio.create_task(self._execute_tool_call(called_tool))
+                        for called_tool in response.tool_calls
+                    ]
+                    tools_future = asyncio.gather(*tools_to_execute)
+                    cancellation_task = asyncio.create_task(
+                        self.cancellation_token.wait_for_cancellation()
+                    )
+
+                    done, pending = await asyncio.wait(
+                        [tools_future, cancellation_task],
+                        return_when=asyncio.FIRST_COMPLETED,
+                    )
+                    if cancellation_task in done:
+                        raise OperationCancelled()
+                    else:
+                        tool_call_results = tools_future.result()
+                        context.extend(tool_call_results)
+
+                else:  # no tool, not empty message: AI wants to reply with a result
+                    self.memory.clear()
+                    self.memory.append_multiple_messages(
+                        context[1:]
+                    )  # appends everything to memory apart from the system message
+                    return self.memory
+        except OperationCancelled:
+            self.cancellation_token.reset_cancellation()
+            return self.memory
 
     async def run_stream(self, message: str) -> str:
         pass
@@ -135,10 +156,12 @@ class MyAgent(BaseAgent):
 async def main():
     model = OllamaChatCompletionClient(
         system_prompt=SYSTEM_PROMPT,
-        model="qwen3.5:9b",
+        model="qwen3.5:9b",  # "mimo-v2.6-9b-q4-km-think:latest",
     )
     memory = Memory()
-    cancelation_token = CancellationToken()
+    cancellation_token = CancellationToken()
+    loop: AbstractEventLoop = asyncio.get_running_loop()
+    loop.add_signal_handler(signal.SIGINT, cancellation_token.set_cancellation)
     agent = MyAgent(
         model=model,
         availible_tools=[
@@ -161,7 +184,9 @@ async def main():
         if task in ["quit", "exit"]:
             print("exiting...")
             break
-        result = await agent.run(task=task)
+        result: Memory = await agent.run(task=task)
+        if not result.messages:
+            continue
         print(f"[magenta]Final Response:\n{result.messages[-1].content}")
 
 

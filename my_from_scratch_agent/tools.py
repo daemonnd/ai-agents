@@ -1,12 +1,13 @@
+from typing import Self
 import asyncio
-from collections.abc import Callable
-import json
 import inspect
-from typing import Any
+import json
+from collections.abc import Callable
 from datetime import datetime
+from typing import Any
 
 from openai.types.chat import ChatCompletionMessageToolCall
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, model_validator
 
 
 async def math_tool(calculation: str) -> float | str:
@@ -101,7 +102,7 @@ class ToolCall(BaseModel):
         cls,
         openai_tool_calls: list[ChatCompletionMessageToolCall],
         availible_tools: list[Tool],
-    ) -> list[ToolCall]:
+    ) -> list[Self]:
         unified_tool_call_list: list[ToolCall] = []
         for tool_call in openai_tool_calls:
             called_name = tool_call.function.name
