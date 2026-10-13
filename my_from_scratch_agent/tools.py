@@ -1,4 +1,3 @@
-from typing import Self
 import asyncio
 import inspect
 import json

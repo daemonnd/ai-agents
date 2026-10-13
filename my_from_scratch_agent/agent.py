@@ -1,6 +1,6 @@
 import asyncio
 import signal
-from abc import ABC
+from abc import ABC, abstractmethod
 from asyncio import AbstractEventLoop, Task
 from collections.abc import Coroutine
 
@@ -43,6 +43,56 @@ class BaseAgent(ABC):
         self.availible_tools = availible_tools
         self.memory = memory
         self.cancellation_token = cancellation_token
+
+    @abstractmethod
+    async def run(self, task: str) -> Memory:
+        pass
+
+    @abstractmethod
+    async def run_stream(self, message: str) -> str:
+        pass
+
+    async def _execute_tool_call(self, called_tool: ToolCall) -> ToolMessage:
+        for tool in self.availible_tools:
+            if tool.get_name() == called_tool.name:
+                print(f"Trying to execute tool {tool.get_name()}...")
+                try:
+                    result = await tool.execute_tool(**called_tool.arguments)
+                    print(
+                        f"[yellow]\nExecuted tool '{tool.get_name()}' successfully. "
+                        f"Result: {result}. "
+                        f"arguments: {called_tool.arguments}[/yellow]"
+                    )
+                    return ToolMessage(
+                        tool_name=tool.get_name(),
+                        result=str(result),
+                        tool_call=called_tool,
+                        success=True,
+                        tool_call_id=called_tool.id,
+                    )
+                except ToolExecutionError as e:
+                    print(f"[red][bold]\nToolExecutionError: {e!s}[/red][/bold]")
+                    return ToolMessage(
+                        tool_name=tool.get_name(),
+                        result=f"ToolExecutionError: {e!s}",
+                        tool_call_id=called_tool.id,
+                        success=False,
+                    )
+        raise ValueError(f"Unknown tool: {called_tool.name}")
+
+
+SYSTEM_PROMPT = "You are a helpful assistant. Use tools when appropriate."
+
+
+class BasicAgent(BaseAgent):
+    def __init__(
+        self,
+        model: BaseChatCompletionClient,
+        availible_tools: list[Tool],
+        memory: Memory,
+        cancellation_token: CancellationToken,
+    ) -> None:
+        super().__init__(model, availible_tools, memory, cancellation_token)
 
     async def run(self, task: str) -> Memory:
         context: list[Message] = [
@@ -127,50 +177,8 @@ class BaseAgent(ABC):
             self.cancellation_token.reset_cancellation()
             return self.memory
 
-    async def run_stream(self, message: str) -> str:
-        pass
-
-    async def _execute_tool_call(self, called_tool: ToolCall) -> ToolMessage:
-        for tool in self.availible_tools:
-            if tool.get_name() == called_tool.name:
-                print(f"Trying to execute tool {tool.get_name()}...")
-                try:
-                    result = await tool.execute_tool(**called_tool.arguments)
-                    print(
-                        f"[yellow]\nExecuted tool '{tool.get_name()}' successfully. "
-                        f"Result: {result}. "
-                        f"arguments: {called_tool.arguments}[/yellow]"
-                    )
-                    return ToolMessage(
-                        tool_name=tool.get_name(),
-                        result=str(result),
-                        tool_call=called_tool,
-                        success=True,
-                        tool_call_id=called_tool.id,
-                    )
-                except ToolExecutionError as e:
-                    print(f"[red][bold]\nToolExecutionError: {e!s}[/red][/bold]")
-                    return ToolMessage(
-                        tool_name=tool.get_name(),
-                        result=f"ToolExecutionError: {e!s}",
-                        tool_call_id=called_tool.id,
-                        success=False,
-                    )
-        raise ValueError(f"Unknown tool: {called_tool.name}")
-
-
-SYSTEM_PROMPT = "You are a helpful assistant. Use tools when appropriate."
-
-
-class MyAgent(BaseAgent):
-    def __init__(
-        self,
-        model: BaseChatCompletionClient,
-        availible_tools: list[Tool],
-        memory: Memory,
-        cancellation_token: CancellationToken,
-    ) -> None:
-        super().__init__(model, availible_tools, memory, cancellation_token)
+    async def run_stream(self, message: str):
+        return ""
 
 
 async def main():
@@ -182,7 +190,7 @@ async def main():
     cancellation_token = CancellationToken()
     loop: AbstractEventLoop = asyncio.get_running_loop()
     loop.add_signal_handler(signal.SIGINT, cancellation_token.set_cancellation)
-    agent = MyAgent(
+    agent = BasicAgent(
         model=model,
         availible_tools=[
             Tool(description="Calculate simple math", to_exec=math_tool),
