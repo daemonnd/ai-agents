@@ -82,18 +82,27 @@ class OllamaChatCompletionClient(BaseChatCompletionClient):
             )
         )
         cancellation_task = asyncio.create_task(
-            cancellation_token.wait_for_cancellation()
+            cancellation_token.wait_for_cancellation(), name="cancellation-waiter"
         )
 
-        done, pending = await asyncio.wait(
-            [request_task, cancellation_task], return_when=(asyncio.FIRST_COMPLETED)
-        )
-        # convert open ai tool calls to the tool call objects from this project
+        try:
+            done, pending = await asyncio.wait(
+                [request_task, cancellation_task],
+                return_when=asyncio.FIRST_COMPLETED,
+            )
 
-        if cancellation_task in done:
-            request_task.cancel()
-            raise OperationCancelled()
-        response = request_task.result()
+            if cancellation_task in done:
+                request_task.cancel()
+                await asyncio.gather(request_task, return_exceptions=True)
+                cancellation_task.result()  # Propagates OperationCancelled
+
+            response = request_task.result()
+
+        finally:
+            if not cancellation_task.done():
+                cancellation_task.cancel()
+
+            await asyncio.gather(cancellation_task, return_exceptions=True)
         return ChatCompletionResponse(
             response_message=response.choices[0].message.content,
             model_parameters=model_params,

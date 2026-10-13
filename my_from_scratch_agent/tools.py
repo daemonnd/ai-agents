@@ -102,7 +102,7 @@ class ToolCall(BaseModel):
         cls,
         openai_tool_calls: list[ChatCompletionMessageToolCall],
         availible_tools: list[Tool],
-    ) -> list[Self]:
+    ) -> list[ToolCall]:
         unified_tool_call_list: list[ToolCall] = []
         for tool_call in openai_tool_calls:
             called_name = tool_call.function.name

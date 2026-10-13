@@ -9,9 +9,11 @@ class CancellationToken:
 
     def set_cancellation(self) -> None:
         self.cancellation = True
+        self.event.set()
 
     def reset_cancellation(self) -> None:
         self.cancellation = False
+        self.event.clear()
 
     def get_cancellation(self) -> bool:
         return self.cancellation

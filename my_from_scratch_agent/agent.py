@@ -73,27 +73,49 @@ class BaseAgent(ABC):
                 )
                 print("\n[green]Model response:[/green]")
                 print(response)
-                if response.tool_calls:  # if the ai wants to call a tool
-                    tools_to_execute: list[Task] = []
-
-                    tools_to_execute = [
+                if response.tool_calls:
+                    tools_to_execute: list[asyncio.Task[ToolMessage]] = [
                         asyncio.create_task(self._execute_tool_call(called_tool))
                         for called_tool in response.tool_calls
                     ]
+
                     tools_future = asyncio.gather(*tools_to_execute)
                     cancellation_task = asyncio.create_task(
-                        self.cancellation_token.wait_for_cancellation()
+                        self.cancellation_token.wait_for_cancellation(),
+                        name="cancellation-waiter",
                     )
 
-                    done, pending = await asyncio.wait(
-                        [tools_future, cancellation_task],
-                        return_when=asyncio.FIRST_COMPLETED,
-                    )
-                    if cancellation_task in done:
-                        raise OperationCancelled()
-                    else:
+                    try:
+                        done, pending = await asyncio.wait(
+                            [tools_future, cancellation_task],
+                            return_when=asyncio.FIRST_COMPLETED,
+                        )
+
+                        if cancellation_task in done:
+                            # Cancellation was requested.
+                            for tool_task in tools_to_execute:
+                                if not tool_task.done():
+                                    tool_task.cancel()
+
+                            # Wait for every tool task to finish its cleanup.
+                            await asyncio.gather(
+                                *tools_to_execute,
+                                return_exceptions=True,
+                            )
+
+                            # Propagate the application's cancellation exception.
+                            cancellation_task.result()
+
+                        # The tool group completed first.
                         tool_call_results = tools_future.result()
                         context.extend(tool_call_results)
+
+                    finally:
+                        # Always clean up the cancellation waiter.
+                        if not cancellation_task.done():
+                            cancellation_task.cancel()
+
+                        await asyncio.gather(cancellation_task, return_exceptions=True)
 
                 else:  # no tool, not empty message: AI wants to reply with a result
                     self.memory.clear()
@@ -134,8 +156,6 @@ class BaseAgent(ABC):
                         tool_call_id=called_tool.id,
                         success=False,
                     )
-                finally:  # the tool executed, so check for cancellation again
-                    self.cancellation_token.check_cancellation()
         raise ValueError(f"Unknown tool: {called_tool.name}")
 
 
