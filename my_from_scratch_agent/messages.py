@@ -1,6 +1,7 @@
 import json
-from typing import Self
+from typing import Self, cast
 
+from openai.types.chat import ChatCompletionMessageParam
 from pydantic import BaseModel, Field
 
 from my_from_scratch_agent.tools import ToolCall
@@ -8,7 +9,9 @@ from my_from_scratch_agent.tools import ToolCall
 
 class Message(BaseModel):
     @classmethod
-    def convert_to_openai(cls, messages: list[Self]) -> list[dict]:
+    def convert_to_openai(
+        cls, messages: list[Self]
+    ) -> list[ChatCompletionMessageParam]:
         result: list[dict] = []
         for message in messages:
             if isinstance(message, SystemMessage):
@@ -43,7 +46,7 @@ class Message(BaseModel):
                         "content": message.result,
                     }
                 )
-        return result
+        return cast(list[ChatCompletionMessageParam], result)
 
 
 class SystemMessage(Message):

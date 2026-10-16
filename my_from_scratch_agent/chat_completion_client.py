@@ -1,13 +1,21 @@
 import asyncio
+import json
 from abc import ABC, abstractmethod
 from asyncio import Task
-from typing import Any
+from collections.abc import AsyncGenerator
+from typing import Any, cast
 
 from openai import AsyncOpenAI
+from openai.types.chat import (
+    ChatCompletionChunk,
+    ChatCompletionStreamOptionsParam,
+    ChatCompletionToolParam,
+)
 from pydantic import BaseModel
+from rich import print
 
 from my_from_scratch_agent.cancellation import CancellationToken
-from my_from_scratch_agent.messages import Message
+from my_from_scratch_agent.messages import Message, SystemMessage, UserMessage
 from my_from_scratch_agent.tools import Tool, ToolCall
 
 
@@ -20,7 +28,18 @@ class ChatCompletionResponse(BaseModel):
     response_message: str
     model_parameters: dict
     tool_calls: list[ToolCall] = []
-    usage: Usage
+    usage: Usage | None
+    model: str
+    stop_reason: str
+
+
+class ChatCompletionResponseChunk(BaseModel):
+    tool_call: ToolCall | None
+    response_chunk: str | None
+    stop_reason: str | None
+    usage: Usage | None
+    model: str
+    model_parameters: dict
 
 
 class BaseChatCompletionClient(ABC):
@@ -42,7 +61,18 @@ class BaseChatCompletionClient(ABC):
 
     @abstractmethod
     async def create_stream(
-        self, message: str, model: str, model_parameters: dict[str, Any] = {}
+        self,
+        messages: list[Message],
+        tools: list[Tool],
+        cancellation_token: CancellationToken,
+        model_parameters: dict[str, Any] = {},
+    ) -> AsyncGenerator[ChatCompletionResponseChunk, None]:
+        pass
+
+    @abstractmethod
+    async def build_response_message(
+        self,
+        response_chunks: list[Any],
     ) -> ChatCompletionResponse:
         pass
 
@@ -67,16 +97,19 @@ class OllamaChatCompletionClient(BaseChatCompletionClient):
         cancellation_token: CancellationToken,
         model_parameters: dict[str, Any] = {},
     ) -> ChatCompletionResponse:
-        model_params = model_parameters or {}
-        open_ai_tools = []
+        model_params: dict[str, Any] = model_parameters or {}
+        open_ai_tools: list[dict] = []
         for tool in tools:
             open_ai_tools.append(tool.convert_to_openai())
+        tools_param: list[ChatCompletionToolParam] = cast(
+            list[ChatCompletionToolParam], open_ai_tools
+        )
 
         request_task: Task = asyncio.create_task(
             self.client.chat.completions.create(
                 model=self.model,
                 messages=Message.convert_to_openai(messages=messages),
-                tools=open_ai_tools,
+                tools=tools_param,
                 **model_params,
             )
         )
@@ -113,9 +146,185 @@ class OllamaChatCompletionClient(BaseChatCompletionClient):
                 tokens_input=response.usage.prompt_tokens,
                 tokens_output=response.usage.completion_tokens,
             ),
+            model=response.model,
+            stop_reason=response.choices[0].finish_reason,
         )
 
     async def create_stream(
-        self, message: str, model: str, model_parameters: dict[str, Any] = {}
+        self,
+        messages: list[Message],
+        tools: list[Tool],
+        cancellation_token: CancellationToken,
+        model_parameters: dict[str, Any] | None = None,
+    ) -> AsyncGenerator[ChatCompletionResponseChunk, None]:
+        stream = None
+        try:
+            model_params = model_parameters or {}
+
+            open_ai_tools = [tool.convert_to_openai() for tool in tools]
+            tools_param: list[ChatCompletionToolParam] = cast(
+                list[ChatCompletionToolParam], open_ai_tools
+            )
+
+            stream = await self.client.chat.completions.create(
+                model=self.model,
+                messages=Message.convert_to_openai(messages=messages),
+                tools=tools_param,
+                stream=True,
+                stream_options=ChatCompletionStreamOptionsParam(include_usage=True),
+                **model_params,
+            )
+
+            response_parts: list[str] = []
+            tool_call_fragments: dict[int, dict[str, Any]] = {}
+            usage: Usage | None = None
+            stop_reason: str | None = None
+            model = self.model
+
+            async for chunk in stream:
+                model = chunk.model or model
+
+                if chunk.usage is not None:
+                    usage = Usage(
+                        tokens_input=chunk.usage.prompt_tokens,
+                        tokens_output=chunk.usage.completion_tokens,
+                    )
+
+                for choice in chunk.choices:
+                    delta = choice.delta
+
+                    if delta.content:
+                        response_parts.append(delta.content)
+                        yield ChatCompletionResponseChunk(
+                            tool_call=None,
+                            response_chunk=delta.content,
+                            stop_reason=None,
+                            usage=None,
+                            model=model,
+                            model_parameters=model_params,
+                        )
+
+                    if delta.tool_calls:
+                        for tool_delta in delta.tool_calls:
+                            accumulated = tool_call_fragments.setdefault(
+                                tool_delta.index,
+                                {"id": None, "name": "", "arguments": ""},
+                            )
+
+                            if tool_delta.id is not None:
+                                accumulated["id"] = tool_delta.id
+
+                            if tool_delta.function is not None:
+                                if tool_delta.function.name:
+                                    accumulated["name"] += tool_delta.function.name
+
+                                if tool_delta.function.arguments:
+                                    accumulated["arguments"] += (
+                                        tool_delta.function.arguments
+                                    )
+
+                    if choice.finish_reason is not None:
+                        stop_reason = choice.finish_reason
+
+            # Convert the accumulated fragments into complete ToolCall objects.
+            for index in sorted(tool_call_fragments):
+                call_data = tool_call_fragments[index]
+
+                call_id = call_data["id"]
+                name = call_data["name"]
+                arguments_json = call_data["arguments"]
+
+                if not call_id or not name:
+                    raise ValueError(
+                        f"Incomplete tool call at index {index}: {call_data}"
+                    )
+
+                arguments = json.loads(arguments_json)
+
+                if not isinstance(arguments, dict):
+                    raise TypeError(f"Arguments for tool {name} must be a JSON object.")
+
+                ToolCall.find_tool(
+                    called_name=name,
+                    available_tools=tools,
+                )
+
+                yield ChatCompletionResponseChunk(
+                    tool_call=ToolCall(
+                        id=call_id,
+                        name=name,
+                        arguments=arguments,
+                    ),
+                    response_chunk=None,
+                    stop_reason=None,
+                    usage=None,
+                    model=model,
+                    model_parameters=model_params,
+                )
+
+            # Final metadata chunk.
+            yield ChatCompletionResponseChunk(
+                tool_call=None,
+                response_chunk=None,
+                stop_reason=stop_reason,
+                usage=usage,
+                model=model,
+                model_parameters=model_params,
+            )
+        finally:
+            if stream is not None:
+                await stream.close()
+
+    async def build_response_message(
+        self,
+        response_chunks: list[ChatCompletionResponseChunk],
     ) -> ChatCompletionResponse:
-        return await super().create_stream(message, model, model_parameters)
+        if response_chunks:
+            model: str = response_chunks[-1].model
+            model_parameters: dict = response_chunks[-1].model_parameters
+        else:
+            model: str = ""
+            model_parameters: dict = {}
+        response_parts: list[str] = []
+        tool_calls: list[ToolCall] = []
+        usage: Usage | None = None
+        stop_reason = ""
+
+        for chunk in response_chunks:
+            if chunk.usage is not None:
+                usage: Usage | None = chunk.usage
+            if chunk.response_chunk is not None:
+                response_parts.append(chunk.response_chunk)
+            if chunk.tool_call is not None:
+                tool_calls.append(chunk.tool_call)
+            if chunk.stop_reason is not None:
+                stop_reason: str = chunk.stop_reason
+
+        return ChatCompletionResponse(
+            response_message="".join(response_parts),
+            model_parameters=model_parameters,
+            model=model,
+            usage=usage,
+            tool_calls=tool_calls,
+            stop_reason=stop_reason,
+        )
+
+
+async def main():
+    model = OllamaChatCompletionClient(
+        system_prompt="You are a helpful assistant",
+    )
+
+    async for chunk in model.create_stream(
+        messages=[
+            SystemMessage(content="You are a helpful assistant"),
+            UserMessage(content="Why is the sky blue?"),
+        ],
+        tools=[],
+        cancellation_token=CancellationToken(),
+    ):
+        print(chunk)
+
+
+if __name__ == "__main__":
+    asyncio.run(main())

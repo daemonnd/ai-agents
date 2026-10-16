@@ -1,8 +1,8 @@
 import asyncio
 import signal
 from abc import ABC, abstractmethod
-from asyncio import AbstractEventLoop, Task
-from collections.abc import Coroutine
+from asyncio import AbstractEventLoop
+from collections.abc import AsyncGenerator
 
 from rich import print
 
@@ -10,6 +10,7 @@ from my_from_scratch_agent.cancellation import CancellationToken, OperationCance
 from my_from_scratch_agent.chat_completion_client import (
     BaseChatCompletionClient,
     ChatCompletionResponse,
+    ChatCompletionResponseChunk,
     OllamaChatCompletionClient,
 )
 from my_from_scratch_agent.memory import Memory
@@ -49,7 +50,7 @@ class BaseAgent(ABC):
         pass
 
     @abstractmethod
-    async def run_stream(self, message: str) -> str:
+    async def run_stream(self, task: str) -> AsyncGenerator[Message, None]:
         pass
 
     async def _execute_tool_call(self, called_tool: ToolCall) -> ToolMessage:
@@ -177,8 +178,139 @@ class BasicAgent(BaseAgent):
             self.cancellation_token.reset_cancellation()
             return self.memory
 
-    async def run_stream(self, message: str):
-        return ""
+    async def consume_stream(self, context: list[Message]) -> ChatCompletionResponse:
+        response_chunks: list[ChatCompletionResponseChunk] = []
+        response_stream: AsyncGenerator[ChatCompletionResponseChunk] = (
+            self.model.create_stream(
+                context,
+                tools=self.availible_tools,
+                cancellation_token=self.cancellation_token,
+            )
+        )
+        async for chunk in response_stream:
+            response_chunks.append(chunk)
+            if chunk.response_chunk is not None:
+                print(chunk.response_chunk, end="")
+            if chunk.tool_call is not None:
+                print(
+                    f"\n TOOL CALL: {chunk.tool_call.name} with arguemnts: {chunk.tool_call.arguments} \n"
+                )
+
+        response: ChatCompletionResponse = await self.model.build_response_message(
+            response_chunks=response_chunks,
+        )
+        return response
+
+    async def obtain_response(self, context: list[Message]) -> ChatCompletionResponse:
+        streaming_task = asyncio.create_task(
+            self.consume_stream(context=context), name="stream-consumer"
+        )
+        cancellation_task = asyncio.create_task(
+            self.cancellation_token.wait_for_cancellation(),
+            name="cancellation-waiter",
+        )
+
+        done, pending = await asyncio.wait(
+            [streaming_task, cancellation_task],
+            return_when=asyncio.FIRST_COMPLETED,
+        )
+
+        if cancellation_task in done:
+            streaming_task.cancel()
+            await asyncio.gather(streaming_task, return_exceptions=True)
+            cancellation_task.result()  # Propagates OperationCancelled
+
+        return streaming_task.result()
+
+    async def run_stream(self, task: str) -> AsyncGenerator[Message, None]:
+        context: list[Message] = [
+            SystemMessage(content=SYSTEM_PROMPT),
+            *self.memory.messages,
+            UserMessage(content=task),
+        ]
+        empty_response_amount: int = 0
+        try:
+            while True:
+                self.cancellation_token.check_cancellation()
+                response: ChatCompletionResponse = await self.obtain_response(
+                    context=context
+                )
+                self.cancellation_token.check_cancellation()  # check cancellation token after model replied
+                if not response.response_message and not response.tool_calls:
+                    empty_response_amount += 1
+                    if empty_response_amount > 5:
+                        print(
+                            "The model returned an empty response during 5 iterations, cancelling"
+                        )
+                        raise OperationCancelled()
+                model_response = AssistantMessage(
+                    content=response.response_message, tool_calls=response.tool_calls
+                )
+                context.append(model_response)
+                self.memory.append_message(
+                    model_response
+                )  # update memory when the message is there cause we don't know which message will be the last
+                yield model_response
+                if (
+                    response.response_message and not response.tool_calls
+                ):  # the model has the final answer
+                    break
+                if response.tool_calls:
+                    tools_to_execute: list[asyncio.Task[ToolMessage]] = [
+                        asyncio.create_task(self._execute_tool_call(called_tool))
+                        for called_tool in response.tool_calls
+                    ]
+
+                    pending_tools = set(tools_to_execute)
+
+                    cancellation_task = asyncio.create_task(
+                        self.cancellation_token.wait_for_cancellation(),
+                        name="cancellation-waiter",
+                    )
+
+                    try:
+                        while pending_tools:
+                            done, _ = await asyncio.wait(
+                                [*pending_tools, cancellation_task],
+                                return_when=asyncio.FIRST_COMPLETED,
+                            )
+
+                            if cancellation_task in done:
+                                cancellation_task.result()  # Raises OperationCancelled
+
+                            # Process whichever tool tasks have finished.
+                            completed_tools = done & pending_tools
+
+                            for tool_task in completed_tools:
+                                pending_tools.remove(tool_task)
+
+                                tool_call_result = tool_task.result()
+
+                                self.memory.append_message(tool_call_result)
+                                context.append(tool_call_result)
+
+                                yield tool_call_result
+
+                    finally:
+                        # Cancel any tools still running if cancellation or an error occurs.
+                        for tool_task in tools_to_execute:
+                            if not tool_task.done():
+                                tool_task.cancel()
+
+                        await asyncio.gather(
+                            *tools_to_execute,
+                            return_exceptions=True,
+                        )
+
+                        if not cancellation_task.done():
+                            cancellation_task.cancel()
+
+                        await asyncio.gather(
+                            cancellation_task,
+                            return_exceptions=True,
+                        )
+        except OperationCancelled:
+            self.cancellation_token.reset_cancellation()
 
 
 async def main():
@@ -208,14 +340,13 @@ async def main():
     )
     print(f"Starting agent with model {model.model}")
     while True:
-        task: str = input("User: ")
+        task: str = input("\nUser: ")
         if task in ["quit", "exit"]:
             print("exiting...")
             break
-        result: Memory = await agent.run(task=task)
-        if not result.messages:
-            continue
-        print(f"[magenta]Final Response:\n{result.messages[-1].content}")
+        result: AsyncGenerator[Message] = agent.run_stream(task=task)
+        async for chunk in result:
+            pass
 
 
 if __name__ == "__main__":

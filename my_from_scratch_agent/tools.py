@@ -101,12 +101,12 @@ class ToolCall(BaseModel):
         cls,
         openai_tool_calls: list[ChatCompletionMessageToolCall],
         availible_tools: list[Tool],
-    ) -> list[ToolCall]:
+    ) -> list["ToolCall"]:
         unified_tool_call_list: list[ToolCall] = []
         for tool_call in openai_tool_calls:
             called_name = tool_call.function.name
             arguments = tool_call.function.arguments
-            tool = ToolCall.find_tool(
+            tool = ToolCall.find_tool(  # TODO: make sure that non-availible tools are handled
                 called_name=called_name, available_tools=availible_tools
             )
             try:
