@@ -1,19 +1,18 @@
-from pydantic import BaseModel, Field
+from abc import ABC, abstractmethod
+from typing import Any
 
-from my_from_scratch_agent.messages import Message
 
+class BaseMemory(ABC):
+    """Abstract interface for agent memory systems"""
 
-class Memory(BaseModel):
-    """short term memory class"""
+    @abstractmethod
+    async def add(self, content: str, metadata: None | dict[str, Any] = None) -> None:
+        """Store new content in memory"""
 
-    messages: list[Message] = Field(default_factory=list)
+    @abstractmethod
+    async def query(self, query: str, limit: int = 10) -> list[str]:
+        """Retrieve relevant memories based on query"""
 
-    def append_message(self, message: Message) -> None:
-        """append a single message to the short term memory"""
-        self.messages.append(message)
-
-    def append_multiple_messages(self, messages: list[Message]) -> None:
-        self.messages.extend(messages)
-
-    def clear(self) -> None:
-        self.messages = []
+    @abstractmethod
+    async def get_context(self, max_items: int = 10) -> list[str]:
+        """Get recent/relevant context for LLM prompt"""
