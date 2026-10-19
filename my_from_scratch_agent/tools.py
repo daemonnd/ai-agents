@@ -35,7 +35,7 @@ class Tool(BaseModel):
         if isinstance(data, dict) and not data.get("name"):
             to_exec = data.get("to_exec")
             data["name"] = getattr(to_exec, "__name__", str(to_exec))
-            return data
+        return data
 
     def get_name(self) -> str:
         return self.name
@@ -48,7 +48,10 @@ class Tool(BaseModel):
         Returns expected output if tool call succeeded, raises ToolExecutionError if it failed
         """
         try:
-            return await self.to_exec(**kwargs)
+            if inspect.iscoroutinefunction(self.to_exec):  # if the function is async
+                return await self.to_exec(**kwargs)
+            else:
+                return self.to_exec(**kwargs)
         except Exception as e:
             raise ToolExecutionError(
                 f"An Error when calling the tool occured: {type(e).__name__}: {e!s}",
@@ -56,12 +59,12 @@ class Tool(BaseModel):
 
     def _type_conversion(self, python_type: type) -> str | None:
         conversion_dict: dict = {
-            "str": "string",
-            "int": "integer",
-            "float": "number",
-            "bool": "boolean",
+            str: "string",
+            int: "integer",
+            float: "number",
+            bool: "boolean",
         }
-        return conversion_dict.get(python_type)
+        return conversion_dict.get(python_type, "null")
 
     def convert_to_openai(self) -> dict:
         result: dict = {
