@@ -3,7 +3,7 @@ from pydantic import BaseModel, Field
 from my_from_scratch_agent.messages import Message
 
 
-class MessageHistory(BaseModel):
+class AgentContext(BaseModel):
     """short term memory class"""
 
     messages: list[Message] = Field(default_factory=list)

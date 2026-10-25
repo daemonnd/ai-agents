@@ -1,3 +1,4 @@
+from my_from_scratch_agent.memory import ListMemory
 import asyncio
 import signal
 from abc import ABC, abstractmethod
@@ -13,7 +14,8 @@ from my_from_scratch_agent.chat_completion_client import (
     ChatCompletionResponseChunk,
     OllamaChatCompletionClient,
 )
-from my_from_scratch_agent.memory import Memory
+from my_from_scratch_agent.context import AgentContext
+from my_from_scratch_agent.memory import BaseMemory
 from my_from_scratch_agent.messages import (
     AssistantMessage,
     Message,
@@ -36,17 +38,21 @@ class BaseAgent(ABC):
         self,
         model: BaseChatCompletionClient,
         availible_tools: list[Tool],
-        memory: Memory,
+        context: AgentContext,
         cancellation_token: CancellationToken,
+        instructions: str,
+        memory: BaseMemory | None = None,
     ) -> None:
         super().__init__()
+        self.instructions = instructions
+        self.memory: BaseMemory = memory or ListMemory()
         self.model = model
         self.availible_tools = availible_tools
-        self.memory = memory
+        self.context: AgentContext = context
         self.cancellation_token = cancellation_token
 
     @abstractmethod
-    async def run(self, task: str) -> Memory:
+    async def run(self, task: str) -> AgentContext:
         pass
 
     @abstractmethod
@@ -90,33 +96,60 @@ class BasicAgent(BaseAgent):
         self,
         model: BaseChatCompletionClient,
         availible_tools: list[Tool],
-        memory: Memory,
+        context: AgentContext,
         cancellation_token: CancellationToken,
+        instructions: str,
+        memory: BaseMemory | None = None,
     ) -> None:
-        super().__init__(model, availible_tools, memory, cancellation_token)
+        super().__init__(
+            model=model,
+            availible_tools=availible_tools,
+            context=context,
+            memory=memory,
+            instructions=instructions,
+            cancellation_token=cancellation_token,
+        )
 
-    async def run(self, task: str) -> Memory:
-        context: list[Message] = [
-            SystemMessage(content=SYSTEM_PROMPT),
-            *self.memory.messages,
-            UserMessage(content=task),
-        ]
+    from picoagents import ListMemory
+
+    async def _prepare_llm_messages(self, task_messages: list[Message]) -> AgentContext:
+        """
+        Prepare context with memory and conversation history integration
+        Parameters:
+            task_messages: `list[Message]` the task messages. They come from the user directly so it it not AgentContext yet
+        """
+        system_content = self.instructions
+        self.context.append_multiple_messages(messages=task_messages)
+        if isinstance(task_messages[-1], UserMessage):
+            context: list[str] = await self.memory.query(
+                query=task_messages[-1].content
+            )
+            if context:
+                system_content += f"\n\nRelevant context:\n{'\n'.join(context)}"
+        return AgentContext(
+            messages=[
+                SystemMessage(content=system_content),
+                *self.context.messages,
+            ]
+        )
+
+    async def run(self, task: str) -> AgentContext:
+        current_context: AgentContext = await self._prepare_llm_messages(
+            task_messages=[UserMessage(content=task)]
+        )
         print(f"[red]Task: {task}[/red]")
         try:
             while True:
                 self.cancellation_token.check_cancellation()
-                print("\n[cyan]current context: [/cyan]")
-                for message in context:
-                    print(message)
                 response: ChatCompletionResponse = await self.model.create(
-                    context,
+                    current_context.messages,
                     tools=self.availible_tools,
                     cancellation_token=self.cancellation_token,
                 )
                 self.cancellation_token.check_cancellation()  # check cancellation token after model replied
                 if not response.response_message and not response.tool_calls:
                     continue
-                context.append(
+                current_context.append_message(
                     AssistantMessage(
                         content=response.response_message,
                         tool_calls=response.tool_calls,
@@ -159,30 +192,29 @@ class BasicAgent(BaseAgent):
 
                         # The tool group completed first.
                         tool_call_results = tools_future.result()
-                        context.extend(tool_call_results)
+                        current_context.append_multiple_messages(tool_call_results)
 
                     finally:
                         # Always clean up the cancellation waiter.
                         if not cancellation_task.done():
                             cancellation_task.cancel()
+                        self.context.append_multiple_messages(
+                            current_context.messages[:-1]
+                        )
 
                         await asyncio.gather(cancellation_task, return_exceptions=True)
 
                 else:  # no tool, not empty message: AI wants to reply with a result
-                    self.memory.clear()
-                    self.memory.append_multiple_messages(
-                        context[1:]
-                    )  # appends everything to memory apart from the system message
-                    return self.memory
+                    return self.context
         except OperationCancelled:
             self.cancellation_token.reset_cancellation()
-            return self.memory
+            return self.context
 
     async def consume_stream(self, context: list[Message]) -> ChatCompletionResponse:
         response_chunks: list[ChatCompletionResponseChunk] = []
         response_stream: AsyncGenerator[ChatCompletionResponseChunk] = (
             self.model.create_stream(
-                context,
+                messages=context,
                 tools=self.availible_tools,
                 cancellation_token=self.cancellation_token,
             )
@@ -223,17 +255,16 @@ class BasicAgent(BaseAgent):
         return streaming_task.result()
 
     async def run_stream(self, task: str) -> AsyncGenerator[Message, None]:
-        context: list[Message] = [
-            SystemMessage(content=SYSTEM_PROMPT),
-            *self.memory.messages,
-            UserMessage(content=task),
-        ]
-        empty_response_amount: int = 0
+        current_context: AgentContext = await self._prepare_llm_messages(
+            task_messages=[UserMessage(content=task)]
+        )
+        print(f"Current context: {current_context}")
+        empty_response_amount = 0
         try:
             while True:
                 self.cancellation_token.check_cancellation()
                 response: ChatCompletionResponse = await self.obtain_response(
-                    context=context
+                    context=current_context.messages
                 )
                 self.cancellation_token.check_cancellation()  # check cancellation token after model replied
                 if not response.response_message and not response.tool_calls:
@@ -246,14 +277,14 @@ class BasicAgent(BaseAgent):
                 model_response = AssistantMessage(
                     content=response.response_message, tool_calls=response.tool_calls
                 )
-                context.append(model_response)
-                self.memory.append_message(
+                current_context.append_message(model_response)
+                self.context.append_message(
                     model_response
-                )  # update memory when the message is there cause we don't know which message will be the last
+                )  # update message_history when the message is there cause we don't know which message will be the last
                 yield model_response
                 if (
                     response.response_message and not response.tool_calls
-                ):  # the model has the final answer
+                ):  # the model has the final answer, it already got yielded
                     break
                 if response.tool_calls:
                     tools_to_execute: list[asyncio.Task[ToolMessage]] = [
@@ -286,8 +317,11 @@ class BasicAgent(BaseAgent):
 
                                 tool_call_result = tool_task.result()
 
-                                self.memory.append_message(tool_call_result)
-                                context.append(tool_call_result)
+                                current_context.append_message(tool_call_result)
+                                if tool_call_result is not None:
+                                    self.context.append_message(
+                                        tool_call_result
+                                    )  # append the tool call result immediately to this agents context cause we don't know when it will be the last turn
 
                                 yield tool_call_result
 
@@ -315,15 +349,16 @@ class BasicAgent(BaseAgent):
 
 async def main():
     model = OllamaChatCompletionClient(
-        system_prompt=SYSTEM_PROMPT,
-        model="qwen3.5:9b",  # "mimo-v2.6-9b-q4-km-think:latest",
+        base_url="http://127.0.0.1:1234/v1",
+        model="mimo-v2.6-distill-qwen-9b",
     )
-    memory = Memory()
+    context = AgentContext()
     cancellation_token = CancellationToken()
     loop: AbstractEventLoop = asyncio.get_running_loop()
     loop.add_signal_handler(signal.SIGINT, cancellation_token.set_cancellation)
     agent = BasicAgent(
         model=model,
+        instructions=SYSTEM_PROMPT,
         availible_tools=[
             Tool(description="Calculate simple math", to_exec=math_tool),
             Tool(
@@ -335,7 +370,7 @@ async def main():
                 to_exec=get_weather,
             ),
         ],
-        memory=memory,
+        context=context,
         cancellation_token=cancellation_token,
     )
     print(f"Starting agent with model {model.model}")
@@ -344,6 +379,10 @@ async def main():
         if task in ["quit", "exit"]:
             print("exiting...")
             break
+        if task.startswith("/remember"):
+            await agent.memory.add(content=task.removeprefix("/remember"))
+            print(f"Writing {task.removeprefix('/remember')} to memory.")
+            continue
         result: AsyncGenerator[Message] = agent.run_stream(task=task)
         async for chunk in result:
             pass
