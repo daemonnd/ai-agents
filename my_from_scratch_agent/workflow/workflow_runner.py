@@ -17,11 +17,11 @@ class WorkflowRunner:
     def __init__(self, workflow: Workflow) -> None:
         self.workflow: Workflow = workflow
 
-    def _get_next_step(self, prev_step_id: str) -> str | None:
+    async def _get_next_step(self, prev_step_id: str) -> str | None:
         """Method that derives the next step from the current step and the edges"""
         for edge in self.workflow.edges:
             if edge.from_step == prev_step_id:
-                print(f"Found {prev_step_id} to {edge.to_step}")
+                logger.debug(f"Found {prev_step_id} to {edge.to_step}")
                 return edge.to_step
         return None
 
@@ -43,9 +43,13 @@ class WorkflowRunner:
                 f"executed first step {self.workflow.first_step.step_id} successful, got {result}"
             )
             last_step_id = self.workflow.first_step.step_id
-            next_step_id = None
+            next_step_id = (
+                None  # for the case that there are no other steps but the first one
+            )
             while True:
-                next_step_id = self._get_next_step(prev_step_id=last_step_id)
+                next_step_id: str | None = await self._get_next_step(
+                    prev_step_id=last_step_id
+                )
                 if next_step_id:
                     logger.info(f"next step id to execute: {next_step_id}")
                     logger.debug(f"Executing Step with id {next_step_id}...")
@@ -57,11 +61,10 @@ class WorkflowRunner:
                     )
 
                     last_step_id = next_step_id
-                    # next_step_id = (
-                    #    None  # so the last one does not execute again in a loop
-                    # )
 
-                return result  # return the result once there are no more steps
+                else:
+                    logger.info("there is no next step id to execute, exiting run")
+                    return result  # return the result once there are no more steps
 
         except Exception as e:
             logger.error(str(e))
@@ -93,21 +96,21 @@ async def main():
         step_id="add_ten",
         input_type=Number,
         output_type=Number,
-        metadata=StepMetadata(name="add ten", max_retries=10),
+        metadata=StepMetadata(name="add ten", max_retries=1),
         func=add_ten,
     )
     double_step = FunctionStep(
         step_id="double",
         input_type=Number,
         output_type=Number,
-        metadata=StepMetadata(name="double", max_retries=10),
+        metadata=StepMetadata(name="double", max_retries=1),
         func=double,
     )
     subtract_five_step = FunctionStep(
         step_id="subtract_five",
         input_type=Number,
         output_type=Number,
-        metadata=StepMetadata(name="subtract five", max_retries=10),
+        metadata=StepMetadata(name="subtract five", max_retries=1),
         func=subtract_five,
     )
     square_step = FunctionStep(
@@ -116,7 +119,7 @@ async def main():
         output_type=Number,
         metadata=StepMetadata(
             name="square",
-            max_retries=10,
+            max_retries=1,
         ),
         func=square,
     )
