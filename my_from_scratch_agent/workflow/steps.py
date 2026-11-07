@@ -1,3 +1,4 @@
+from typing import overload
 import inspect
 import logging
 from abc import ABC, abstractmethod
@@ -24,6 +25,18 @@ class StepStatus(str, Enum):
     FAILED = "failed"
 
 
+class StepExecution(BaseModel):
+    step_id: str
+    input_data: Any
+    input_type: type
+    output_data: Any
+    output_type: type
+    started_at: datetime = datetime.now()
+    completed_at: datetime
+    status: StepStatus = StepStatus.PENDING
+    error: str | None = None
+
+
 class BaseStep(ABC):
     def __init__(
         self,
@@ -38,8 +51,23 @@ class BaseStep(ABC):
         self.metadata = metadata
 
         self._status = StepStatus.PENDING
-        self._start_time: datetime | None = None
+        self._start_time: datetime
         self._error: str | None = None
+
+    def set_status(self, status: StepStatus, error_message: str | None = None) -> None:
+        """
+        Method that sets the status
+        If the target status is FAILED, then error_message becomes relevant and will be set to _error
+        """
+        self._status = status
+        if status == StepStatus.FAILED:
+            self._error = error_message
+
+    def get_status(self) -> StepStatus:
+        return self._status
+
+    def get_error(self) -> str | None:
+        return self._error
 
     @abstractmethod
     async def execute(self, input_data: Any) -> Any:
@@ -70,11 +98,11 @@ class BaseStep(ABC):
             except Exception as e:
                 self._error = str(e)
             else:
-                self.step_status = StepStatus.COMPLETED
+                self._status = StepStatus.COMPLETED
                 return step_result
             finally:
                 retry_count += 1
-        self.step_status = StepStatus.FAILED
+        self._status = StepStatus.FAILED
         logger.info(
             f"Step {self.step_id} failed after {retry_count} retries. Error: {self._error}"
         )

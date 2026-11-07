@@ -1,3 +1,9 @@
+from datetime import datetime
+from my_from_scratch_agent.workflow.steps import StepExecution
+from my_from_scratch_agent.workflow.workflow_execution import WorkflowStatus
+from my_from_scratch_agent.workflow.steps import BaseStep
+from my_from_scratch_agent.workflow.workflow_execution import WorkflowExecution
+from my_from_scratch_agent.workflow.steps import StepStatus
 import asyncio
 import logging
 from typing import Any
@@ -7,8 +13,8 @@ from pydantic import BaseModel
 from my_from_scratch_agent.workflow.edge import Edge
 from my_from_scratch_agent.workflow.steps import FunctionStep, StepMetadata
 from my_from_scratch_agent.workflow.workflow import Workflow, WorkflowMetadata
-from my_from_scratch_agent import log_config
 
+from my_from_scratch_agent import log_config
 
 logger = logging.getLogger(__name__)
 
@@ -16,6 +22,9 @@ logger = logging.getLogger(__name__)
 class WorkflowRunner:
     def __init__(self, workflow: Workflow) -> None:
         self.workflow: Workflow = workflow
+        self.workflow_executions: WorkflowExecution = WorkflowExecution(
+            workflow=self.workflow
+        )
 
     async def _get_next_step(self, prev_step_id: str) -> str | None:
         """Method that derives the next step from the current step and the edges"""
@@ -25,6 +34,57 @@ class WorkflowRunner:
                 return edge.to_step
         return None
 
+    async def _execute_one_step(self, step: BaseStep, input_data: Any) -> Any:
+        """
+        Method that handles the execution, state management and result collection of the step to be executed
+        """
+        logger.info(f"Executing Step with ID '{step.step_id}'")
+        step.set_status(status=StepStatus.RUNNING)
+        result = None
+        try:
+            result = await step.run(input_data=input_data)
+        except Exception as e:
+            step.set_status(status=StepStatus.FAILED, error_message=str(e))
+            step_execution = StepExecution(
+                step_id=step.step_id,
+                status=step._status,
+                input_data=input_data,
+                input_type=type(input_data),
+                output_data=None,
+                output_type=type(None),
+                started_at=step._start_time,
+                completed_at=datetime.now(),
+                error=step.get_error(),
+            )
+            logger.error(f"Step '{step.step_id}' failed: {type(e).__name__}: {e}")
+            logger.debug(
+                f"Step Execution of failed step '{step.step_id}': {step_execution}"
+            )
+            raise
+        else:
+            step.set_status(
+                status=StepStatus.COMPLETED,
+            )
+            step_execution = StepExecution(
+                step_id=step.step_id,
+                status=step._status,
+                input_data=input_data,
+                input_type=type(input_data),
+                output_data=None,
+                output_type=type(None),
+                started_at=step._start_time,
+                completed_at=datetime.now(),
+                error=step.get_error(),
+            )
+            self.workflow_executions.add_result(
+                step_id=step.step_id, step_execution=step_execution
+            )
+            logger.info(
+                f"Executed step with id '{step.step_id}' successfully, got result {result}"
+            )
+            logger.debug(f"Step Execution of executed step: {step_execution}")
+            return step_execution.output_data
+
     async def run(self, first_input_data: Any):
         logger.info(f"starting workflow {self.workflow.metadata.name}")
         logger.debug(f"Edges: {self.workflow.edges}")
@@ -32,16 +92,16 @@ class WorkflowRunner:
         logger.debug(
             f"Other steps: {', '.join(step_id for step_id in self.workflow.steps)}"
         )
+        self.workflow_executions.set_status(WorkflowStatus.RUNNING)
         try:
             # execute the first step
             logger.debug(
                 f"executing the first step with first input data: {first_input_data!r}"
             )
-            result = await self.workflow.first_step.execute(input_data=first_input_data)
-
-            logger.info(
-                f"executed first step {self.workflow.first_step.step_id} successful, got {result}"
+            result = await self._execute_one_step(
+                step=self.workflow.first_step, input_data=first_input_data
             )
+
             last_step_id = self.workflow.first_step.step_id
             next_step_id = (
                 None  # for the case that there are no other steps but the first one
@@ -51,22 +111,22 @@ class WorkflowRunner:
                     prev_step_id=last_step_id
                 )
                 if next_step_id:
-                    logger.info(f"next step id to execute: {next_step_id}")
-                    logger.debug(f"Executing Step with id {next_step_id}...")
-                    result = await self.workflow.steps[next_step_id].run(
-                        input_data=result
+                    result = await self._execute_one_step(
+                        step=self.workflow.steps[next_step_id],
+                        input_data=result,
                     )
-                    logger.info(
-                        f"Executed step with id {next_step_id} successfully, got result {result}"
-                    )
-
                     last_step_id = next_step_id
 
                 else:
                     logger.info("there is no next step id to execute, exiting run")
+                    self.workflow_executions.set_status(status=WorkflowStatus.COMPLETED)
                     return result  # return the result once there are no more steps
 
+        except KeyboardInterrupt:
+            self.workflow_executions.set_status(status=WorkflowStatus.CANCELLED)
+            logger.error("Failed to keep workflow execution, keyboard interrupted")
         except Exception as e:
+            self.workflow_executions.set_status(status=WorkflowStatus.FAILED)
             logger.error(str(e))
 
 
