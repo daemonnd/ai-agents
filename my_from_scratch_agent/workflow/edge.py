@@ -25,7 +25,9 @@ class EdgeCondition(BaseModel):
     )
     field: str | None = None
     value: Any | None = None  # against what value it should be compared
-    operator: None | Literal["==", "<", ">", "!=", "<=", ">=", "in"] = None
+    operator: (
+        None | Literal["==", "<", ">", "!=", "<=", ">=", "in", "not in", "is", "is not"]
+    ) = None
 
     # def evaluate_edge_condition(self) -> bool:
     #    if self.type == "always":

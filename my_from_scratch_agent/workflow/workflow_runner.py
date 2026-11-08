@@ -60,6 +60,9 @@ class WorkflowRunner:
             logger.debug(
                 f"Step Execution of failed step '{step.step_id}': {step_execution}"
             )
+            self.workflow_executions.add_result(
+                step_id=step.step_id, step_execution=step_execution
+            )
             raise
         else:
             step.set_status(
@@ -70,8 +73,8 @@ class WorkflowRunner:
                 status=step._status,
                 input_data=input_data,
                 input_type=type(input_data),
-                output_data=None,
-                output_type=type(None),
+                output_data=result,
+                output_type=type(result),
                 started_at=step._start_time,
                 completed_at=datetime.now(),
                 error=step.get_error(),
@@ -88,7 +91,7 @@ class WorkflowRunner:
     async def run(self, first_input_data: Any):
         logger.info(f"starting workflow {self.workflow.metadata.name}")
         logger.debug(f"Edges: {self.workflow.edges}")
-        logger.debug(f"First Step: {self.workflow.first_step}")
+        logger.debug(f"First Step: '{self.workflow.first_step.step_id}'")
         logger.debug(
             f"Other steps: {', '.join(step_id for step_id in self.workflow.steps)}"
         )
@@ -125,6 +128,7 @@ class WorkflowRunner:
         except KeyboardInterrupt:
             self.workflow_executions.set_status(status=WorkflowStatus.CANCELLED)
             logger.error("Failed to keep workflow execution, keyboard interrupted")
+            raise
         except Exception as e:
             self.workflow_executions.set_status(status=WorkflowStatus.FAILED)
             logger.error(str(e))

@@ -1,3 +1,4 @@
+from pydantic import Field
 from typing import overload
 import inspect
 import logging
@@ -31,7 +32,7 @@ class StepExecution(BaseModel):
     input_type: type
     output_data: Any
     output_type: type
-    started_at: datetime = datetime.now()
+    started_at: datetime
     completed_at: datetime
     status: StepStatus = StepStatus.PENDING
     error: str | None = None
