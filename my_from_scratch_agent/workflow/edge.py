@@ -29,10 +29,50 @@ class EdgeCondition(BaseModel):
         None | Literal["==", "<", ">", "!=", "<=", ">=", "in", "not in", "is", "is not"]
     ) = None
 
-    # def evaluate_edge_condition(self) -> bool:
-    #    if self.type == "always":
-    #        return True
-    #    if self.type == "output_based":
+    def _get_nested_field_value(self, step_output: Any) -> Any:
+        if self.field is None:
+            return step_output
+        for attr in self.field.split("."):
+            if hasattr(step_output, attr):
+                step_output = step_output.attr
+        return step_output
+
+    def evaluate_edge_condition(self, step_output: Any) -> bool:
+        match self.type:
+            case "always":
+                return True
+            case "output_based":
+                result_value: Any = self._get_nested_field_value(
+                    step_output=step_output
+                )
+
+                match self.operator:
+                    case "==":
+                        return result_value == self.value
+                    case "!=":
+                        return result_value != self.value
+                    case "<":
+                        return result_value < self.value
+                    case ">":
+                        return result_value > self.value
+                    case "<=":
+                        return result_value <= self.value
+                    case ">=":
+                        return result_value >= self.value
+                    case "is":
+                        return result_value is self.value
+                    case "is not":
+                        return result_value is not self.value
+                    case None:
+                        raise ValueError(
+                            "The operator can't be None when the type is 'output_based'"
+                        )
+                    case "in":
+                        return result_value in self.value
+                    case "not in":
+                        return result_value not in self.value
+            case "state_based":
+                return True
 
 
 class Edge(BaseModel):
