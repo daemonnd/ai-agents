@@ -1,20 +1,24 @@
-from datetime import datetime
-from my_from_scratch_agent.workflow.steps import StepExecution
-from my_from_scratch_agent.workflow.workflow_execution import WorkflowStatus
-from my_from_scratch_agent.workflow.steps import BaseStep
-from my_from_scratch_agent.workflow.workflow_execution import WorkflowExecution
-from my_from_scratch_agent.workflow.steps import StepStatus
 import asyncio
 import logging
+from datetime import datetime
 from typing import Any
 
 from pydantic import BaseModel
 
-from my_from_scratch_agent.workflow.edge import Edge
-from my_from_scratch_agent.workflow.steps import FunctionStep, StepMetadata
+from my_from_scratch_agent import log_config  # noqa: F401
+from my_from_scratch_agent.workflow.edge import Edge, EdgeCondition
+from my_from_scratch_agent.workflow.steps import (
+    BaseStep,
+    FunctionStep,
+    StepExecution,
+    StepMetadata,
+    StepStatus,
+)
 from my_from_scratch_agent.workflow.workflow import Workflow, WorkflowMetadata
-
-from my_from_scratch_agent import log_config
+from my_from_scratch_agent.workflow.workflow_execution import (
+    WorkflowExecution,
+    WorkflowStatus,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -26,12 +30,20 @@ class WorkflowRunner:
             workflow=self.workflow
         )
 
-    async def _get_next_step(self, prev_step_id: str) -> str | None:
+    async def _get_next_step(self, prev_step_id: str, result: Any) -> str | None:
         """Method that derives the next step from the current step and the edges"""
         for edge in self.workflow.edges:
             if edge.from_step == prev_step_id:
                 logger.debug(f"Found {prev_step_id} to {edge.to_step}")
-                return edge.to_step
+                if edge.condition.evaluate_edge_condition(step_output=result):
+                    logger.info(
+                        f"Edge condition '{edge.condition}', passed, next step will be '{edge.to_step}'"
+                    )
+                    return edge.to_step
+                else:
+                    logger.info(
+                        f"Edge condition {edge.condition}, did not pass because  meaning that '{edge.to_step}' won't be executed"
+                    )
         return None
 
     async def _execute_one_step(self, step: BaseStep, input_data: Any) -> Any:
@@ -111,7 +123,7 @@ class WorkflowRunner:
             )
             while True:
                 next_step_id: str | None = await self._get_next_step(
-                    prev_step_id=last_step_id
+                    prev_step_id=last_step_id, result=result
                 )
                 if next_step_id:
                     result = await self._execute_one_step(
@@ -132,6 +144,7 @@ class WorkflowRunner:
         except Exception as e:
             self.workflow_executions.set_status(status=WorkflowStatus.FAILED)
             logger.error(str(e))
+            raise
 
 
 class Number(BaseModel):
@@ -153,6 +166,10 @@ async def subtract_five(x: Number) -> Number:
 
 async def square(x: Number) -> Number:
     return Number(value=(x.value**2))
+
+
+async def quadruple(x: Number) -> Number:
+    return Number(value=(x.value**4))
 
 
 async def main():
@@ -187,6 +204,13 @@ async def main():
         ),
         func=square,
     )
+    quadruple_step = FunctionStep(
+        step_id="quadruple",
+        input_type=Number,
+        output_type=Number,
+        metadata=StepMetadata(name="quadruple", max_retries=1),
+        func=quadruple,
+    )
     myworkflow = Workflow(metadata=WorkflowMetadata(name="math workflow"))
     myworkflow.add_first_step(add_ten_step)
     myworkflow.add_edge(
@@ -198,12 +222,29 @@ async def main():
     )
     myworkflow.add_step(subtract_five_step)
     myworkflow.add_edge(
-        Edge(from_step=subtract_five_step.step_id, to_step=square_step.step_id)
+        Edge(
+            from_step=subtract_five_step.step_id,
+            to_step=square_step.step_id,
+            condition=EdgeCondition(
+                type="output_based", field="value", operator="<", value=100
+            ),
+        )
+    )
+
+    myworkflow.add_edge(
+        Edge(
+            from_step=subtract_five_step.step_id,
+            to_step=quadruple_step.step_id,
+            condition=EdgeCondition(
+                type="output_based", field="value", operator=">=", value=100
+            ),
+        )
     )
     myworkflow.add_step(square_step)
+    myworkflow.add_step(quadruple_step)
 
     runner = WorkflowRunner(workflow=myworkflow)
-    return await runner.run(first_input_data=Number(value=3))
+    return await runner.run(first_input_data=Number(value=100))
 
 
 if __name__ == "__main__":

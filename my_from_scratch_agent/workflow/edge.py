@@ -1,9 +1,10 @@
+import logging
 from typing import Any, Literal
 from uuid import uuid7
 
 from pydantic import BaseModel, Field
 
-from picoagents.orchestration.workflow import EdgeCondition
+logger = logging.getLogger(__name__)
 
 
 class EdgeCondition(BaseModel):
@@ -34,7 +35,14 @@ class EdgeCondition(BaseModel):
             return step_output
         for attr in self.field.split("."):
             if hasattr(step_output, attr):
-                step_output = step_output.attr
+                step_output = getattr(
+                    step_output,
+                    attr,
+                )
+
+        logger.debug(
+            f"Value of the step output with field(s): '{self.field}'. Final value to compare: '{step_output}', type: {type(step_output)}"
+        )
         return step_output
 
     def evaluate_edge_condition(self, step_output: Any) -> bool:
