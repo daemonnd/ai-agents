@@ -1,3 +1,4 @@
+from my_from_scratch_agent.workflow.context import WorkflowContext
 import logging
 from typing import Any, Literal
 from uuid import uuid7
@@ -24,11 +25,14 @@ class EdgeCondition(BaseModel):
     type: Literal["always", "output_based", "state_based"] = Field(
         default="always", description="type of edge condition"
     )
-    field: str | None = None
+    field: str | None = Field(
+        default=None,
+        description="field name of field to take from prev step output or the shared context. if ommited then the entire prev step output / shared context will be taken",
+    )
     value: Any | None = None  # against what value it should be compared
-    operator: (
-        None | Literal["==", "<", ">", "!=", "<=", ">=", "in", "not in", "is", "is not"]
-    ) = None
+    operator: Literal[
+        "==", "<", ">", "!=", "<=", ">=", "in", "not in", "is", "is not"
+    ] = "=="
 
     def _get_nested_field_value(self, step_output: Any) -> Any:
         if self.field is None:
@@ -45,7 +49,39 @@ class EdgeCondition(BaseModel):
         )
         return step_output
 
-    def evaluate_edge_condition(self, step_output: Any) -> bool:
+    def _compare_values(
+        self,
+        left: Any,
+        right: Any,
+        operator: Literal[
+            "==", "<", ">", "!=", "<=", ">=", "in", "not in", "is", "is not"
+        ] = "==",
+    ) -> bool:
+        match operator:
+            case "==":
+                return left == right
+            case "!=":
+                return left != right
+            case "<":
+                return left < right
+            case ">":
+                return left > right
+            case "<=":
+                return left <= right
+            case ">=":
+                return left >= right
+            case "is":
+                return left is right
+            case "is not":
+                return left is not right
+            case "in":
+                return left in right
+            case "not in":
+                return left not in right
+
+    def evaluate_edge_condition(
+        self, step_output: Any, context: WorkflowContext
+    ) -> bool:
         match self.type:
             case "always":
                 return True
@@ -53,34 +89,22 @@ class EdgeCondition(BaseModel):
                 result_value: Any = self._get_nested_field_value(
                     step_output=step_output
                 )
+                return self._compare_values(
+                    left=result_value, right=self.value, operator=self.operator
+                )
 
-                match self.operator:
-                    case "==":
-                        return result_value == self.value
-                    case "!=":
-                        return result_value != self.value
-                    case "<":
-                        return result_value < self.value
-                    case ">":
-                        return result_value > self.value
-                    case "<=":
-                        return result_value <= self.value
-                    case ">=":
-                        return result_value >= self.value
-                    case "is":
-                        return result_value is self.value
-                    case "is not":
-                        return result_value is not self.value
-                    case None:
-                        raise ValueError(
-                            "The operator can't be None when the type is 'output_based'"
-                        )
-                    case "in":
-                        return result_value in self.value
-                    case "not in":
-                        return result_value not in self.value
             case "state_based":
-                return True
+                if (
+                    self.field is None
+                ):  # do it here cause it does not use _get_nested_field_value
+                    return self._compare_values(
+                        left=context, right=self.value, operator=self.operator
+                    )
+                return self._compare_values(
+                    left=context.get(self.field),
+                    right=self.value,
+                    operator=self.operator,
+                )
 
 
 class Edge(BaseModel):

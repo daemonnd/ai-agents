@@ -1,3 +1,4 @@
+from my_from_scratch_agent.workflow.context import WorkflowContext
 import inspect
 import logging
 from abc import ABC, abstractmethod
@@ -69,10 +70,12 @@ class BaseStep(ABC):
         return self._error
 
     @abstractmethod
-    async def execute(self, input_data: Any) -> Any:
+    async def execute(self, input_data: Any, context: WorkflowContext) -> Any:
         pass
 
-    async def run(self, input_data: BaseModel | dict) -> BaseModel:
+    async def run(
+        self, input_data: BaseModel | dict, context: WorkflowContext
+    ) -> BaseModel:
         self._status = StepStatus.RUNNING
         self._start_time = datetime.now()
 
@@ -93,7 +96,9 @@ class BaseStep(ABC):
         while retry_count <= self.metadata.max_retries:
             try:
                 # validated_input = self.input_type(**input_data)
-                step_result = await self.execute(input_data=validated_input_data)
+                step_result = await self.execute(
+                    input_data=validated_input_data, context=context
+                )
             except Exception as e:
                 self._error = str(e)
             else:
@@ -120,12 +125,14 @@ class FunctionStep(BaseStep):
         super().__init__(step_id, input_type, output_type, metadata)
         self.func = func
 
-    async def execute(self, input_data: Any) -> BaseModel | Any:
+    async def execute(
+        self, input_data: Any, context: WorkflowContext
+    ) -> BaseModel | Any:
         try:
             if inspect.iscoroutinefunction(self.func):
-                result = await self.func(input_data)
+                result = await self.func(input_data, context)
             else:
-                result = self.func(input_data)
+                result = self.func(input_data, context)
         except Exception as e:
             self._error = str(e)
             logger.error(

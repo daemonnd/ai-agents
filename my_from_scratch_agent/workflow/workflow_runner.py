@@ -1,3 +1,4 @@
+from my_from_scratch_agent.workflow.context import WorkflowContext
 import asyncio
 import logging
 from datetime import datetime
@@ -24,7 +25,10 @@ logger = logging.getLogger(__name__)
 
 
 class WorkflowRunner:
-    def __init__(self, workflow: Workflow) -> None:
+    def __init__(
+        self, workflow: Workflow, start_context: WorkflowContext | None = None
+    ) -> None:
+        self.context = start_context or WorkflowContext()
         self.workflow: Workflow = workflow
         self.workflow_executions: WorkflowExecution = WorkflowExecution(
             workflow=self.workflow
@@ -35,7 +39,9 @@ class WorkflowRunner:
         for edge in self.workflow.edges:
             if edge.from_step == prev_step_id:
                 logger.debug(f"Found {prev_step_id} to {edge.to_step}")
-                if edge.condition.evaluate_edge_condition(step_output=result):
+                if edge.condition.evaluate_edge_condition(
+                    step_output=result, context=self.context
+                ):
                     logger.info(
                         f"Edge condition '{edge.condition}', passed, next step will be '{edge.to_step}'"
                     )
@@ -46,7 +52,9 @@ class WorkflowRunner:
                     )
         return None
 
-    async def _execute_one_step(self, step: BaseStep, input_data: Any) -> Any:
+    async def _execute_one_step(
+        self, step: BaseStep, input_data: Any, context: WorkflowContext
+    ) -> Any:
         """
         Method that handles the execution, state management and result collection of the step to be executed
         """
@@ -54,7 +62,7 @@ class WorkflowRunner:
         step.set_status(status=StepStatus.RUNNING)
         result = None
         try:
-            result = await step.run(input_data=input_data)
+            result = await step.run(input_data=input_data, context=context)
         except Exception as e:
             step.set_status(status=StepStatus.FAILED, error_message=str(e))
             step_execution = StepExecution(
@@ -109,12 +117,17 @@ class WorkflowRunner:
         )
         self.workflow_executions.set_status(WorkflowStatus.RUNNING)
         try:
+            logger.debug(
+                f"Shared context before any step executions: {self.context.get('test')}"
+            )
             # execute the first step
             logger.debug(
                 f"executing the first step with first input data: {first_input_data!r}"
             )
             result = await self._execute_one_step(
-                step=self.workflow.first_step, input_data=first_input_data
+                step=self.workflow.first_step,
+                input_data=first_input_data,
+                context=self.context,
             )
 
             last_step_id = self.workflow.first_step.step_id
@@ -122,6 +135,7 @@ class WorkflowRunner:
                 None  # for the case that there are no other steps but the first one
             )
             while True:
+                logger.debug(f"Shared context: {self.context.get('test')}")
                 next_step_id: str | None = await self._get_next_step(
                     prev_step_id=last_step_id, result=result
                 )
@@ -129,9 +143,11 @@ class WorkflowRunner:
                     result = await self._execute_one_step(
                         step=self.workflow.steps[next_step_id],
                         input_data=result,
+                        context=self.context,
                     )
                     last_step_id = next_step_id
 
+                    logger.debug(f"Shared context: {self.context.get('test')}")
                 else:
                     logger.info("there is no next step id to execute, exiting run")
                     self.workflow_executions.set_status(status=WorkflowStatus.COMPLETED)
@@ -152,23 +168,24 @@ class Number(BaseModel):
 
 
 # some example math functions
-async def add_ten(x: Number) -> Number:
+async def add_ten(x: Number, context: WorkflowContext) -> Number:
+    context.set(key="test", value="IT WORKS!!!!!!!!!")
     return Number(value=x.value + 10)
 
 
-async def double(x: Number) -> Number:
+async def double(x: Number, _) -> Number:
     return Number(value=x.value * 2)
 
 
-async def subtract_five(x: Number) -> Number:
+async def subtract_five(x: Number, _) -> Number:
     return Number(value=(x.value - 5))
 
 
-async def square(x: Number) -> Number:
+async def square(x: Number, _) -> Number:
     return Number(value=(x.value**2))
 
 
-async def quadruple(x: Number) -> Number:
+async def quadruple(x: Number, _) -> Number:
     return Number(value=(x.value**4))
 
 
