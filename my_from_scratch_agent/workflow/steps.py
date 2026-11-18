@@ -23,6 +23,18 @@ class StepStatus(str, Enum):
     RUNNING = "running"
     COMPLETED = "completed"
     FAILED = "failed"
+    CONDITION_NOT_MET = "condition_not_met"  # no incoming route selected this step
+    DEPENDENCY_FAILED = "dependency_failed"  # a required predecessor failed
+    DEPENDENCY_SKIPPED = "dependency_skipped"  # a required predecessor was skipped
+
+    @classmethod
+    def get_resolved_outcomes(cls) -> list[StepStatus]:
+        return [
+            StepStatus.COMPLETED,
+            StepStatus.DEPENDENCY_FAILED,
+            StepStatus.DEPENDENCY_SKIPPED,
+            StepStatus.FAILED,
+        ]
 
 
 class StepExecution(BaseModel):

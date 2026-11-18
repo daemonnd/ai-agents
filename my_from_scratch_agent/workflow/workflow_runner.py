@@ -1,4 +1,3 @@
-from my_from_scratch_agent.workflow.context import WorkflowContext
 import asyncio
 import logging
 from datetime import datetime
@@ -7,6 +6,7 @@ from typing import Any
 from pydantic import BaseModel
 
 from my_from_scratch_agent import log_config  # noqa: F401
+from my_from_scratch_agent.workflow.context import WorkflowContext
 from my_from_scratch_agent.workflow.edge import Edge, EdgeCondition
 from my_from_scratch_agent.workflow.steps import (
     BaseStep,
@@ -33,24 +33,6 @@ class WorkflowRunner:
         self.workflow_executions: WorkflowExecution = WorkflowExecution(
             workflow=self.workflow
         )
-
-    async def _get_next_step(self, prev_step_id: str, result: Any) -> str | None:
-        """Method that derives the next step from the current step and the edges"""
-        for edge in self.workflow.edges:
-            if edge.from_step == prev_step_id:
-                logger.debug(f"Found {prev_step_id} to {edge.to_step}")
-                if edge.condition.evaluate_edge_condition(
-                    step_output=result, context=self.context
-                ):
-                    logger.info(
-                        f"Edge condition '{edge.condition}', passed, next step will be '{edge.to_step}'"
-                    )
-                    return edge.to_step
-                else:
-                    logger.info(
-                        f"Edge condition {edge.condition}, did not pass because  meaning that '{edge.to_step}' won't be executed"
-                    )
-        return None
 
     async def _execute_one_step(
         self, step: BaseStep, input_data: Any, context: WorkflowContext
@@ -131,23 +113,25 @@ class WorkflowRunner:
             )
 
             last_step_id = self.workflow.first_step.step_id
-            next_step_id = (
-                None  # for the case that there are no other steps but the first one
-            )
+            next_step_ids: list[
+                str
+            ] = []  # for the case that there are no other steps but the first one
+
             while True:
-                logger.debug(f"Shared context: {self.context.get('test')}")
-                next_step_id: str | None = await self._get_next_step(
+                next_step_ids: list[str] = self.workflow._get_next_steps(
                     prev_step_id=last_step_id, result=result
                 )
-                if next_step_id:
-                    result = await self._execute_one_step(
-                        step=self.workflow.steps[next_step_id],
-                        input_data=result,
-                        context=self.context,
-                    )
-                    last_step_id = next_step_id
+                if next_step_ids:
+                    for step_id in next_step_ids:
+                        result = await self._execute_one_step(
+                            step=self.workflow.steps[step_id],
+                            input_data=result,
+                            context=self.context,
+                        )
+                    last_step_id = next_step_ids[
+                        -1
+                    ]  # take the last executed one from the list
 
-                    logger.debug(f"Shared context: {self.context.get('test')}")
                 else:
                     logger.info("there is no next step id to execute, exiting run")
                     self.workflow_executions.set_status(status=WorkflowStatus.COMPLETED)
@@ -167,9 +151,9 @@ class Number(BaseModel):
     value: int
 
 
-# some example math functions
+# Functions
 async def add_ten(x: Number, context: WorkflowContext) -> Number:
-    context.set(key="test", value="IT WORKS!!!!!!!!!")
+    context.set(key="test", value="IT WORKS!")
     return Number(value=x.value + 10)
 
 
@@ -178,18 +162,19 @@ async def double(x: Number, _) -> Number:
 
 
 async def subtract_five(x: Number, _) -> Number:
-    return Number(value=(x.value - 5))
+    return Number(value=x.value - 5)
 
 
 async def square(x: Number, _) -> Number:
-    return Number(value=(x.value**2))
+    return Number(value=x.value**2)
 
 
 async def quadruple(x: Number, _) -> Number:
-    return Number(value=(x.value**4))
+    return Number(value=x.value**4)
 
 
 async def main():
+    # Define steps
     add_ten_step = FunctionStep(
         step_id="add_ten",
         input_type=Number,
@@ -197,6 +182,7 @@ async def main():
         metadata=StepMetadata(name="add ten", max_retries=1),
         func=add_ten,
     )
+
     double_step = FunctionStep(
         step_id="double",
         input_type=Number,
@@ -204,6 +190,7 @@ async def main():
         metadata=StepMetadata(name="double", max_retries=1),
         func=double,
     )
+
     subtract_five_step = FunctionStep(
         step_id="subtract_five",
         input_type=Number,
@@ -211,16 +198,15 @@ async def main():
         metadata=StepMetadata(name="subtract five", max_retries=1),
         func=subtract_five,
     )
+
     square_step = FunctionStep(
         step_id="square",
         input_type=Number,
         output_type=Number,
-        metadata=StepMetadata(
-            name="square",
-            max_retries=1,
-        ),
+        metadata=StepMetadata(name="square", max_retries=1),
         func=square,
     )
+
     quadruple_step = FunctionStep(
         step_id="quadruple",
         input_type=Number,
@@ -228,40 +214,59 @@ async def main():
         metadata=StepMetadata(name="quadruple", max_retries=1),
         func=quadruple,
     )
-    myworkflow = Workflow(metadata=WorkflowMetadata(name="math workflow"))
-    myworkflow.add_first_step(add_ten_step)
-    myworkflow.add_edge(
-        edge=Edge(from_step=add_ten_step.step_id, to_step=double_step.step_id)
-    )
-    myworkflow.add_step(double_step)
-    myworkflow.add_edge(
-        Edge(from_step=double_step.step_id, to_step=subtract_five_step.step_id)
-    )
-    myworkflow.add_step(subtract_five_step)
-    myworkflow.add_edge(
-        Edge(
-            from_step=subtract_five_step.step_id,
-            to_step=square_step.step_id,
-            condition=EdgeCondition(
-                type="output_based", field="value", operator="<", value=100
-            ),
-        )
+
+    square_finish_step = FunctionStep(
+        step_id="square_finish",
+        input_type=Number,
+        output_type=Number,
+        metadata=StepMetadata(name="square finish", max_retries=1),
+        func=subtract_five,
     )
 
-    myworkflow.add_edge(
+    quadruple_finish_step = FunctionStep(
+        step_id="quadruple_finish",
+        input_type=Number,
+        output_type=Number,
+        metadata=StepMetadata(name="quadruple finish", max_retries=1),
+        func=double,
+    )
+    finish_step = FunctionStep(
+        step_id="finish",
+        input_type=Number,
+        output_type=Number,
+        metadata=StepMetadata(name="finish step", max_retries=1),
+        func=subtract_five,
+    )
+
+    # Build workflow
+    workflow = Workflow(metadata=WorkflowMetadata(name="conditional dependency test"))
+
+    workflow.add_first_step(add_ten_step)
+
+    # Sequential path
+    workflow.add_step(double_step)
+
+    workflow.add_step(finish_step)
+    workflow.add_step(quadruple_finish_step)
+
+    workflow.add_edge(
         Edge(
-            from_step=subtract_five_step.step_id,
-            to_step=quadruple_step.step_id,
-            condition=EdgeCondition(
-                type="output_based", field="value", operator=">=", value=100
-            ),
+            from_step="add_ten",
+            to_step="double",
         )
     )
-    myworkflow.add_step(square_step)
-    myworkflow.add_step(quadruple_step)
-
-    runner = WorkflowRunner(workflow=myworkflow)
-    return await runner.run(first_input_data=Number(value=100))
+    workflow.add_edge(Edge(from_step="quadruple_finish", to_step="finish"))
+    workflow.add_edge(Edge(from_step="double", to_step="quadruple_finish"))
+    runner = WorkflowRunner(workflow=workflow)
+    print(
+        f"furthest linear ancestor of quadruple_finish: {runner.workflow._get_furthest_linear_ancestor_list('quadruple_finish')}"
+    )
+    print(
+        f"furthest linear ancestor of finish: {runner.workflow._get_furthest_linear_ancestor_list('finish')}"
+    )
+    print(
+        f"furthest linear ancestor of add_ten: {runner.workflow._get_furthest_linear_ancestor_list('add_ten')}"
+    )
 
 
 if __name__ == "__main__":
