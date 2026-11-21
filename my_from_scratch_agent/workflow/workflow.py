@@ -15,12 +15,14 @@ class WorkflowMetadata(BaseModel):
 
 
 class Workflow:
-    first_step: BaseStep
 
     def __init__(self, metadata: WorkflowMetadata):
+
+        self.first_step: BaseStep
         self.metadata = metadata
         self.steps: dict[str, BaseStep] = {}
         self.edges: list[Edge] = []
+        self.all_steps: dict[str, BaseStep]
 
     def add_step(self, step: BaseStep):
         self.steps[step.step_id] = step
@@ -140,7 +142,6 @@ class Workflow:
             required_dependencies[dependency.step_id] = []
             if dependency.get_status() not in StepStatus.get_resolved_outcomes():
                 required_dependencies[dependency.step_id].append(dependency)
-            required_dependencies[dependency.step_id].extend(self._get_nested_dependencies(dependency))
             
         return required_dependencies
 

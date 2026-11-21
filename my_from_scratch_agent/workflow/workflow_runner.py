@@ -8,7 +8,7 @@ from pydantic import BaseModel
 
 from my_from_scratch_agent import log_config  # noqa: F401
 from my_from_scratch_agent.workflow.context import WorkflowContext
-from my_from_scratch_agent.workflow.edge import Edge
+from my_from_scratch_agent.workflow.edge import Edge, EdgeCondition
 from my_from_scratch_agent.workflow.steps import (
     BaseStep,
     FunctionStep,
@@ -48,6 +48,9 @@ class WorkflowRunner:
                 required_dependencies = self.workflow._get_required_dependencies(
                     dependencies=dependencies
                 )
+                if any(required_dependencies.values()):
+                    self.workflow.steps.get(edge.to_step).set_status(StepStatus.AWAITING_DEPENDENCY) # can't be the first step cause an edge points to it
+                    logger.debug(f"Set {edge.to_step} to awaiting_dependency cause it still has unresolved dependencies")
                 logger.debug(f"The required dependencies of the dependencies '{dependencies}' are: {required_dependencies}")
                 for dependency in set(chain.from_iterable(required_dependencies.values())):
                     logger.debug(
@@ -154,7 +157,8 @@ class WorkflowRunner:
                 )
                 for descendant in self.workflow._get_linear_descendants(step.step_id):
                     if target_status:
-                        self.workflow.steps.get(descendant).set_status(target_status)
+                        self.workflow.steps.get(descendant).set_status(target_status) # the first step can't be a descendant so it works
+
 
     async def run(self, first_input_data: Any):
         logger.info(f"starting workflow {self.workflow.metadata.name}")
@@ -201,6 +205,9 @@ class WorkflowRunner:
                 else:
                     logger.info("there is no next step id to execute, exiting run")
                     self.workflow_executions.set_status(status=WorkflowStatus.COMPLETED)
+                    logger.debug(f"Step status of first step '{self.workflow.first_step.step_id}': {self.workflow.first_step.get_status()}")
+                    for step in self.workflow.steps:
+                        logger.debug(f"Step status of '{step}' {self.workflow.steps.get(step).get_status()}")
                     return result  # return the result once there are no more steps
 
         except KeyboardInterrupt:
@@ -304,39 +311,102 @@ async def main():
         func=subtract_five,
     )
 
-    # Build workflow
-    workflow = Workflow(metadata=WorkflowMetadata(name="conditional dependency test"))
+
+
+    workflow = Workflow(
+        metadata=WorkflowMetadata(name="fan-out and fan-in dependency test")
+    )
+
+    add_ten_step = FunctionStep(
+        step_id="add_ten",
+        input_type=Number,
+        output_type=Number,
+        metadata=StepMetadata(name="Add ten"),
+        func=add_ten,
+    )
+
+    subtract_five_step = FunctionStep(
+        step_id="subtract_five",
+        input_type=Number,
+        output_type=Number,
+        metadata=StepMetadata(name="Subtract five"),
+        func=subtract_five,
+    )
+
+    double_step = FunctionStep(
+        step_id="double",
+        input_type=Number,
+        output_type=Number,
+        metadata=StepMetadata(name="Double"),
+        func=double,
+    )
+
+    square_step = FunctionStep(
+        step_id="square",
+        input_type=Number,
+        output_type=Number,
+        metadata=StepMetadata(name="Square"),
+        func=square,
+    )
+
+    quadruple_step = FunctionStep(
+        step_id="quadruple",
+        input_type=Number,
+        output_type=Number,
+        metadata=StepMetadata(name="Quadruple"),
+        func=quadruple,
+    )
 
     workflow.add_first_step(add_ten_step)
-
-    # Sequential path
+    workflow.add_step(subtract_five_step)
     workflow.add_step(double_step)
+    workflow.add_step(square_step)
+    workflow.add_step(quadruple_step)
 
-    workflow.add_step(finish_step)
-    workflow.add_step(quadruple_finish_step)
 
     workflow.add_edge(
         Edge(
             from_step="add_ten",
             to_step="double",
+            condition=EdgeCondition(
+                type="output_based",
+                field="value",
+                operator=">=",
+                value=20,
+            ),
         )
     )
-    workflow.add_edge(Edge(from_step="quadruple_finish", to_step="finish"))
-    workflow.add_edge(Edge(from_step="double", to_step="quadruple_finish"))
-    runner = WorkflowRunner(workflow=workflow)
-    print(
-        f"furthest linear ancestor of quadruple_finish: {runner.workflow._get_linear_ancestors('quadruple_finish')}"
+
+    workflow.add_edge(
+        Edge(
+            from_step="add_ten",
+            to_step="subtract_five",
+            condition=EdgeCondition(
+                type="output_based",
+                field="value",
+                operator="<",
+                value=20,
+            ),
+        )
     )
-    print(
-        f"furthest linear ancestor of finish: {runner.workflow._get_linear_ancestors('finish')}"
+
+    workflow.add_edge(
+        Edge(from_step="double", to_step="quadruple")
     )
-    print(
-        f"furthest linear ancestor of add_ten: {runner.workflow._get_linear_ancestors('add_ten')}"
+
+    workflow.add_edge(
+        Edge(from_step="subtract_five", to_step="square")
     )
-    print(
-        f"furthest linear child of add_ten: {runner.workflow._get_linear_descendants('add_ten')}"
+
+    workflow.add_edge(
+        Edge(from_step="square", to_step="quadruple")
     )
-    return await runner.run(first_input_data=Number(value=10))
+
+
+    runner = WorkflowRunner(workflow)
+
+    
+    return await runner.run(first_input_data=Number(value=5))
 
 
 if __name__ == "__main__":

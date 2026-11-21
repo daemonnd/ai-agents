@@ -24,6 +24,7 @@ class StepStatus(str, Enum):
     RUNNING = "running"
     COMPLETED = "completed"
     FAILED = "failed"
+    AWAITING_DEPENDENCY = "awaiting_dependency" # a dependency of that step has to execute first
     CONDITION_NOT_MET = "condition_not_met"  # no incoming route selected this step
     DEPENDENCY_FAILED = "dependency_failed"  # a required predecessor failed
     DEPENDENCY_SKIPPED = "dependency_skipped"  # a required predecessor was skipped
@@ -35,6 +36,7 @@ class StepStatus(str, Enum):
             StepStatus.DEPENDENCY_FAILED,
             StepStatus.DEPENDENCY_SKIPPED,
             StepStatus.FAILED,
+            StepStatus.CONDITION_NOT_MET,
         ]
 
     @classmethod
@@ -84,6 +86,11 @@ class BaseStep(ABC):
         self._status = StepStatus.PENDING
         self._start_time: datetime
         self._error: str | None = None
+
+    def __str__(self) -> str:
+        return f"{type(self).__name__} '{self.step_id}' with status '{self._status.value}'"
+    def __repr__(self) -> str:
+        return f"{type(self).__name__} '{self.step_id}' with status '{self._status.value}'"
 
     def set_status(self, status: StepStatus, error_message: str | None = None) -> None:
         """
