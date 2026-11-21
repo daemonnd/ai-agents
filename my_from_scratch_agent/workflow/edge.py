@@ -28,7 +28,7 @@ class EdgeCondition(BaseModel):
     )
     field: str | None = Field(
         default=None,
-        description="field name of field to take from prev step output or the shared context. if ommited then the entire prev step output / shared context will be taken",
+        description="field name of field to take from prev step output or the shared context. if omitted then the entire prev step output / shared context will be taken",
     )
     value: Any | None = None  # against what value it should be compared
     operator: Literal[
