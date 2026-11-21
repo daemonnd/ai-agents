@@ -1,4 +1,3 @@
-from my_from_scratch_agent.workflow.context import WorkflowContext
 import inspect
 import logging
 from abc import ABC, abstractmethod
@@ -8,6 +7,8 @@ from enum import Enum
 from typing import Any
 
 from pydantic import BaseModel
+
+from my_from_scratch_agent.workflow.context import WorkflowContext
 
 logger = logging.getLogger(__name__)
 
@@ -34,6 +35,24 @@ class StepStatus(str, Enum):
             StepStatus.DEPENDENCY_FAILED,
             StepStatus.DEPENDENCY_SKIPPED,
             StepStatus.FAILED,
+        ]
+
+    @classmethod
+    def get_propagation_mapping(cls) -> dict[StepStatus, StepStatus]:
+        return {
+            StepStatus.FAILED: StepStatus.DEPENDENCY_FAILED,
+            StepStatus.CONDITION_NOT_MET: StepStatus.DEPENDENCY_SKIPPED,
+            StepStatus.DEPENDENCY_FAILED: StepStatus.DEPENDENCY_FAILED,
+            StepStatus.DEPENDENCY_SKIPPED: StepStatus.DEPENDENCY_SKIPPED,
+        }
+
+    @classmethod
+    def get_non_processing_descendant_outcomes(cls) -> list[StepStatus]:
+        return [
+            StepStatus.FAILED,
+            StepStatus.CONDITION_NOT_MET,
+            StepStatus.DEPENDENCY_FAILED,
+            StepStatus.DEPENDENCY_SKIPPED,
         ]
 
 

@@ -1,9 +1,10 @@
-from my_from_scratch_agent.workflow.context import WorkflowContext
 import logging
 from typing import Any, Literal
 from uuid import uuid7
 
 from pydantic import BaseModel, Field
+
+from my_from_scratch_agent.workflow.context import WorkflowContext
 
 logger = logging.getLogger(__name__)
 
