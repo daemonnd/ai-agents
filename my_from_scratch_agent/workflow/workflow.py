@@ -14,6 +14,10 @@ class WorkflowMetadata(BaseModel):
     version: str = "1.0"
 
 
+class WorkflowDefinitionError(ValueError):
+    """Raised when step input declarations do not agree with the workflow graph."""
+
+
 class Workflow:
 
     def __init__(self, metadata: WorkflowMetadata):
@@ -38,6 +42,40 @@ class Workflow:
         self.first_step = step
         logger.debug(f"added first step {step.step_id}")
         return self  # for chaining
+
+    def validate(self) -> None:
+        """Check the declared step inputs against the edges of the workflow.
+
+        Only the first step takes a single model; every other step must map each
+        upstream step ID to the value type it expects. The mapping keys must be
+        exactly the direct predecessors of that step, so adding an incoming edge
+        later fails loudly instead of silently producing the wrong input dict.
+        """
+        for step in self.steps.values():
+            if not isinstance(step.input_type, dict):
+                raise WorkflowDefinitionError(
+                    f"Step '{step.step_id}' is not the first step, so its "
+                    "input_type must map step IDs to value types"
+                )
+
+            dependency_ids = {
+                dependency.step_id
+                for dependency in self._get_step_dependencies(step.step_id)
+            }
+            declared_ids = set(step.input_type)
+            if declared_ids != dependency_ids:
+                raise WorkflowDefinitionError(
+                    f"Step '{step.step_id}' declares input keys "
+                    f"{sorted(declared_ids)}, but its incoming edges define "
+                    f"{sorted(dependency_ids)}"
+                )
+
+            for upstream_step_id, expected_type in step.input_type.items():
+                if not isinstance(expected_type, type):
+                    raise WorkflowDefinitionError(
+                        f"Step '{step.step_id}' declares {expected_type!r} as the "
+                        f"input type for step '{upstream_step_id}'; expected a type"
+                    )
 
     def _get_furthest_linear_descendant(self, step_id: str) -> str:
         linear_children: list[str] = []

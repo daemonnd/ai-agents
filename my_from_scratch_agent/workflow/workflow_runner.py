@@ -24,6 +24,9 @@ from my_from_scratch_agent.workflow.workflow_execution import (
 
 logger = logging.getLogger(__name__)
 
+class NoInputError(Exception):
+    def __init__(self, *args: object) -> None:
+        super().__init__(*args)
 
 class WorkflowRunner:
     def __init__(
@@ -78,24 +81,80 @@ class WorkflowRunner:
         logger.debug(f"Next steps to execute: {next_steps}")
         return next_steps
 
+    def _get_completed_dependencies(self, step: BaseStep) -> list[BaseStep]:
+        """Predecessors whose output is usable as input for ``step``."""
+        return [
+            dependency
+            for dependency in self.workflow._get_step_dependencies(step_id=step.step_id)
+            if dependency.get_status() is StepStatus.COMPLETED
+        ]
+
+    async def _get_step_input_data(self, step: BaseStep) -> dict[str, Any]:
+        step_input_data: dict[str, Any] = {}
+        for dependency in self._get_completed_dependencies(step):
+            execution = self.workflow_executions.step_executions.get(dependency.step_id)
+            if execution is not None:
+                step_input_data[dependency.step_id] = execution.result
+        if step_input_data:
+            return step_input_data
+        raise NoInputError()
+
+
+
     async def _execute_one_step(
-        self, step: BaseStep, input_data: Any, context: WorkflowContext
+        self, step: BaseStep, context: WorkflowContext, input_data: Any | None = None,
     ) -> Any:
         """
         Method that handles the execution, state management and result collection of the step to be executed
+        Parameters:
+            - `input_data`: it is highly recommended to only use it if the step that is being executed is the first
         """
         logger.info(f"Executing Step with ID '{step.step_id}'")
         step.set_status(status=StepStatus.RUNNING)
         result = None
+        resolved_input_data: Any = input_data
+        expected_input_keys: set[str] | None = None
         try:
-            result = await step.run(input_data=input_data, context=context)
+            if input_data is None:
+                resolved_input_data = await self._get_step_input_data(step)
+                expected_input_keys = {
+                    dependency.step_id
+                    for dependency in self._get_completed_dependencies(step)
+                }
+            result = await step.run(
+                input_data=resolved_input_data,
+                context=context,
+                expected_keys=expected_input_keys,
+            )
+        except NoInputError:
+            step.set_status(status=StepStatus.NO_INPUT_RECEIVED, error_message="No input from previous step got collected, cancelling step execution")
+            step_execution = StepExecution(
+                step_id=step.step_id,
+                status=step._status,
+                input_data=resolved_input_data,
+                input_type=step.input_type,
+                output_data=None,
+                output_type=type(None),
+                started_at=step._start_time,
+                completed_at=datetime.now(),
+                error=step.get_error(),
+            )
+            logger.error(f"Step '{step.step_id}' failed because all ancestor steps failed.")
+            logger.debug(
+                f"Step Execution of failed step '{step.step_id}': {step_execution}"
+            )
+            self.workflow_executions.add_result(
+                step_id=step.step_id, step_execution=step_execution
+            )
+            self._post_process_step(step)
+            raise
         except Exception as e:
             step.set_status(status=StepStatus.FAILED, error_message=str(e))
             step_execution = StepExecution(
                 step_id=step.step_id,
                 status=step._status,
-                input_data=input_data,
-                input_type=type(input_data),
+                input_data=resolved_input_data,
+                input_type=step.input_type,
                 output_data=None,
                 output_type=type(None),
                 started_at=step._start_time,
@@ -118,13 +177,14 @@ class WorkflowRunner:
             step_execution = StepExecution(
                 step_id=step.step_id,
                 status=step._status,
-                input_data=input_data,
-                input_type=type(input_data),
+                input_data=resolved_input_data,
+                input_type=step.input_type,
                 output_data=result,
                 output_type=type(result),
                 started_at=step._start_time,
                 completed_at=datetime.now(),
                 error=step.get_error(),
+                result=result,
             )
             self.workflow_executions.add_result(
                 step_id=step.step_id, step_execution=step_execution
@@ -161,6 +221,7 @@ class WorkflowRunner:
 
 
     async def run(self, first_input_data: Any):
+        self.workflow.validate()
         logger.info(f"starting workflow {self.workflow.metadata.name}")
         logger.debug(f"Edges: {self.workflow.edges}")
         logger.debug(f"First Step: '{self.workflow.first_step.step_id}'")
@@ -168,6 +229,7 @@ class WorkflowRunner:
             f"Other steps: {', '.join(step_id for step_id in self.workflow.steps)}"
         )
         self.workflow_executions.set_status(WorkflowStatus.RUNNING)
+        self.workflow_executions.set_initial_input(first_input_data)
         try:
             logger.debug(
                 f"Shared context before any step executions: {self.context.get('test')}"
@@ -176,7 +238,7 @@ class WorkflowRunner:
             logger.debug(
                 f"executing the first step with first input data: {first_input_data!r}"
             )
-            result = await self._execute_one_step(
+            await self._execute_one_step(
                 step=self.workflow.first_step,
                 input_data=first_input_data,
                 context=self.context,
@@ -189,13 +251,12 @@ class WorkflowRunner:
 
             while True:
                 next_step_ids: list[str] = self._get_next_steps(
-                    prev_step_id=last_step_id, result=result, context=self.context
+                    prev_step_id=last_step_id, result=self.workflow_executions.step_executions[last_step_id].result, context=self.context
                 )
                 if next_step_ids:
                     for step_id in next_step_ids:
-                        result = await self._execute_one_step(
+                        await self._execute_one_step(
                             step=self.workflow.steps[step_id],
-                            input_data=result,
                             context=self.context,
                         )
                     last_step_id = next_step_ids[
@@ -208,7 +269,7 @@ class WorkflowRunner:
                     logger.debug(f"Step status of first step '{self.workflow.first_step.step_id}': {self.workflow.first_step.get_status()}")
                     for step in self.workflow.steps:
                         logger.debug(f"Step status of '{step}' {self.workflow.steps.get(step).get_status()}")
-                    return result  # return the result once there are no more steps
+                    return self.workflow_executions.step_executions[last_step_id].result
 
         except KeyboardInterrupt:
             self.workflow_executions.set_status(status=WorkflowStatus.CANCELLED)
@@ -230,20 +291,23 @@ async def add_ten(x: Number, context: WorkflowContext) -> Number:
     return Number(value=x.value + 10)
 
 
-async def double(x: Number, _) -> Number:
-    return Number(value=x.value * 2)
+async def double(input: dict, _) -> Number:
+    return Number(value=input["add_ten"].value * 2)
 
 
-async def subtract_five(x: Number, _) -> Number:
-    return Number(value=x.value - 5)
+async def subtract_five(input: dict, _) -> Number:
+    return Number(value=input["add_ten"].value - 5)
 
 
-async def square(x: Number, _) -> Number:
-    return Number(value=x.value**2)
+async def square(input: dict, _) -> Number:
+    return Number(value=input["subtract_five"].value ** 2)
 
 
-async def quadruple(x: Number, _) -> Number:
-    return Number(value=x.value**4)
+async def quadruple(input: dict, _) -> Number:
+    if "square" in input.keys():
+        return Number(value=input["square"].value * 4)
+    if "double" in input.keys():
+        return Number(value=input["double"].value * 4)
 
 
 async def main():
@@ -258,7 +322,7 @@ async def main():
 
     double_step = FunctionStep(
         step_id="double",
-        input_type=Number,
+        input_type={"add_ten": Number},
         output_type=Number,
         metadata=StepMetadata(name="double", max_retries=1),
         func=double,
@@ -266,7 +330,7 @@ async def main():
 
     subtract_five_step = FunctionStep(
         step_id="subtract_five",
-        input_type=Number,
+        input_type={"add_ten": Number},
         output_type=Number,
         metadata=StepMetadata(name="subtract five", max_retries=1),
         func=subtract_five,
@@ -274,7 +338,7 @@ async def main():
 
     square_step = FunctionStep(
         step_id="square",
-        input_type=Number,
+        input_type={"subtract_five": Number},
         output_type=Number,
         metadata=StepMetadata(name="square", max_retries=1),
         func=square,
@@ -282,7 +346,7 @@ async def main():
 
     quadruple_step = FunctionStep(
         step_id="quadruple",
-        input_type=Number,
+        input_type={"double": Number, "square": Number},
         output_type=Number,
         metadata=StepMetadata(name="quadruple", max_retries=1),
         func=quadruple,
@@ -327,7 +391,7 @@ async def main():
 
     subtract_five_step = FunctionStep(
         step_id="subtract_five",
-        input_type=Number,
+        input_type={"add_ten": Number},
         output_type=Number,
         metadata=StepMetadata(name="Subtract five"),
         func=subtract_five,
@@ -335,7 +399,7 @@ async def main():
 
     double_step = FunctionStep(
         step_id="double",
-        input_type=Number,
+        input_type={"add_ten": Number},
         output_type=Number,
         metadata=StepMetadata(name="Double"),
         func=double,
@@ -343,7 +407,7 @@ async def main():
 
     square_step = FunctionStep(
         step_id="square",
-        input_type=Number,
+        input_type={"subtract_five": Number},
         output_type=Number,
         metadata=StepMetadata(name="Square"),
         func=square,
@@ -351,7 +415,7 @@ async def main():
 
     quadruple_step = FunctionStep(
         step_id="quadruple",
-        input_type=Number,
+        input_type={"double": Number, "square": Number},
         output_type=Number,
         metadata=StepMetadata(name="Quadruple"),
         func=quadruple,
@@ -406,7 +470,7 @@ async def main():
     runner = WorkflowRunner(workflow)
 
     
-    return await runner.run(first_input_data=Number(value=5))
+    return await runner.run(first_input_data=Number(value=20))
 
 
 if __name__ == "__main__":

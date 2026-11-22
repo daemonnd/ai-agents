@@ -31,18 +31,18 @@ async def add_ten(x: Number, _) -> Number:
     return Number(value=x.value + 10)
 
 
-async def subtract_five(x: Number, _) -> Number:
-    return Number(value=x.value - 5)
+async def subtract_five(x: dict[str, Number], _) -> Number:
+    return Number(value=x["add_ten"].value - 5)
 
 
-async def square(x: Number, _) -> Number:
-    return Number(value=x.value**2)
+async def square(x: dict[str, Number], _) -> Number:
+    return Number(value=x["subtract_five"].value**2)
 
 
-def make_step(step_id: str, func) -> FunctionStep:
+def make_step(step_id: str, input_type, func) -> FunctionStep:
     return FunctionStep(
         step_id=step_id,
-        input_type=Number,
+        input_type=input_type,
         output_type=Number,
         metadata=StepMetadata(name=step_id),
         func=func,
@@ -56,17 +56,17 @@ def test_sequential_workflow_executes_in_order_and_passes_each_output_forward():
         calls.append(("add_ten", x.value))
         return await add_ten(x, context)
 
-    async def tracked_subtract_five(x: Number, context) -> Number:
-        calls.append(("subtract_five", x.value))
+    async def tracked_subtract_five(x: dict[str, Number], context) -> Number:
+        calls.append(("subtract_five", x["add_ten"].value))
         return await subtract_five(x, context)
 
-    async def tracked_square(x: Number, context) -> Number:
-        calls.append(("square", x.value))
+    async def tracked_square(x: dict[str, Number], context) -> Number:
+        calls.append(("square", x["subtract_five"].value))
         return await square(x, context)
 
-    first = make_step("add_ten", tracked_add_ten)
-    subtract = make_step("subtract_five", tracked_subtract_five)
-    square_step = make_step("square", tracked_square)
+    first = make_step("add_ten", Number, tracked_add_ten)
+    subtract = make_step("subtract_five", {"add_ten": Number}, tracked_subtract_five)
+    square_step = make_step("square", {"subtract_five": Number}, tracked_square)
 
     workflow = Workflow(metadata=WorkflowMetadata(name="sequential regression"))
     workflow.add_first_step(first)

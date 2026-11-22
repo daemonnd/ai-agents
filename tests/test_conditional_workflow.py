@@ -33,27 +33,29 @@ async def add_ten(x: Number, _) -> Number:
     return Number(value=x.value + 10)
 
 
-async def subtract_five(x: Number, _) -> Number:
-    return Number(value=x.value - 5)
+async def subtract_five(x: dict[str, Number], _) -> Number:
+    return Number(value=x["add_ten"].value - 5)
 
 
-async def double(x: Number, _) -> Number:
-    return Number(value=x.value * 2)
+async def double(x: dict[str, Number], _) -> Number:
+    return Number(value=x["add_ten"].value * 2)
 
 
-async def square(x: Number, _) -> Number:
-    return Number(value=x.value**2)
+async def square(x: dict[str, Number], _) -> Number:
+    return Number(value=x["subtract_five"].value**2)
 
 
-async def quadruple(x: Number, _) -> Number:
+async def quadruple(x: dict[str, Number], _) -> Number:
     # This function raises the value to the fourth power.
-    return Number(value=x.value**4)
+    if "square" in x:
+        return Number(value=x["square"].value**4)
+    return Number(value=x["double"].value**4)
 
 
-def make_step(step_id: str, func) -> FunctionStep:
+def make_step(step_id: str, input_type, func) -> FunctionStep:
     return FunctionStep(
         step_id=step_id,
-        input_type=Number,
+        input_type=input_type,
         output_type=Number,
         metadata=StepMetadata(name=step_id),
         func=func,
@@ -67,27 +69,30 @@ def make_conditional_workflow(calls=None, *, high_operator=">="):
         calls.append(("add_ten", x.value))
         return await add_ten(x, context)
 
-    async def tracked_subtract_five(x: Number, context) -> Number:
-        calls.append(("subtract_five", x.value))
+    async def tracked_subtract_five(x: dict[str, Number], context) -> Number:
+        calls.append(("subtract_five", x["add_ten"].value))
         return await subtract_five(x, context)
 
-    async def tracked_double(x: Number, context) -> Number:
-        calls.append(("double", x.value))
+    async def tracked_double(x: dict[str, Number], context) -> Number:
+        calls.append(("double", x["add_ten"].value))
         return await double(x, context)
 
-    async def tracked_square(x: Number, context) -> Number:
-        calls.append(("square", x.value))
+    async def tracked_square(x: dict[str, Number], context) -> Number:
+        calls.append(("square", x["subtract_five"].value))
         return await square(x, context)
 
-    async def tracked_quadruple(x: Number, context) -> Number:
-        calls.append(("quadruple", x.value))
+    async def tracked_quadruple(x: dict[str, Number], context) -> Number:
+        value = x["square"].value if "square" in x else x["double"].value
+        calls.append(("quadruple", value))
         return await quadruple(x, context)
 
-    add = make_step("add_ten", tracked_add_ten)
-    subtract = make_step("subtract_five", tracked_subtract_five)
-    double_step = make_step("double", tracked_double)
-    square_step = make_step("square", tracked_square)
-    quadruple_step = make_step("quadruple", tracked_quadruple)
+    add = make_step("add_ten", Number, tracked_add_ten)
+    subtract = make_step("subtract_five", {"add_ten": Number}, tracked_subtract_five)
+    double_step = make_step("double", {"add_ten": Number}, tracked_double)
+    square_step = make_step("square", {"subtract_five": Number}, tracked_square)
+    quadruple_step = make_step(
+        "quadruple", {"double": Number, "square": Number}, tracked_quadruple
+    )
 
     workflow = Workflow(metadata=WorkflowMetadata(name="conditional regression"))
     workflow.add_first_step(add)
@@ -217,17 +222,17 @@ def test_state_based_condition_routes_using_workflow_context():
         calls.append(("add_ten", x.value))
         return await add_ten(x, context)
 
-    async def tracked_double(x: Number, context) -> Number:
-        calls.append(("double", x.value))
+    async def tracked_double(x: dict[str, Number], context) -> Number:
+        calls.append(("double", x["add_ten"].value))
         return await double(x, context)
 
-    async def tracked_subtract_five(x: Number, context) -> Number:
-        calls.append(("subtract_five", x.value))
+    async def tracked_subtract_five(x: dict[str, Number], context) -> Number:
+        calls.append(("subtract_five", x["add_ten"].value))
         return await subtract_five(x, context)
 
-    add = make_step("add_ten", tracked_add_ten)
-    double_step = make_step("double", tracked_double)
-    subtract = make_step("subtract_five", tracked_subtract_five)
+    add = make_step("add_ten", Number, tracked_add_ten)
+    double_step = make_step("double", {"add_ten": Number}, tracked_double)
+    subtract = make_step("subtract_five", {"add_ten": Number}, tracked_subtract_five)
 
     workflow = Workflow(metadata=WorkflowMetadata(name="state-based condition"))
     workflow.add_first_step(add)

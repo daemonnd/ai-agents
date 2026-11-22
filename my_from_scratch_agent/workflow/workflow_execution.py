@@ -15,8 +15,8 @@ class WorkflowStatus(str, Enum):
 
 class WorkflowExecution:
     """tracks the execution of an entire workflow"""
-
     def __init__(self, workflow: Workflow):
+        self.initial_input: Any
         self.workflow = workflow
         self.step_executions: dict[str, StepExecution] = {}
         self.status: WorkflowStatus = WorkflowStatus.CREATED
@@ -26,3 +26,6 @@ class WorkflowExecution:
 
     def add_result(self, step_id: str, step_execution: StepExecution) -> None:
         self.step_executions[step_id] = step_execution
+
+    def set_initial_input(self, initial_input: Any): 
+        self.initial_input: Any = initial_input
