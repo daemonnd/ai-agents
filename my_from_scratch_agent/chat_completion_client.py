@@ -80,13 +80,11 @@ class BaseChatCompletionClient(ABC):
 class OllamaChatCompletionClient(BaseChatCompletionClient):
     def __init__(
         self,
-        system_prompt: str,
         model: str = "qwen3.5:9b",
         base_url: str = "http://localhost:11434/v1",
         api_key: str = "api_key",
     ) -> None:
         super().__init__(base_url, api_key)
-        self.system_prompt = system_prompt
         self.client = AsyncOpenAI(api_key=api_key, base_url=base_url)
         self.model = model
 
@@ -311,9 +309,7 @@ class OllamaChatCompletionClient(BaseChatCompletionClient):
 
 
 async def main():
-    model = OllamaChatCompletionClient(
-        system_prompt="You are a helpful assistant",
-    )
+    model = OllamaChatCompletionClient()
 
     async for chunk in model.create_stream(
         messages=[
