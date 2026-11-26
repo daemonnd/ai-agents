@@ -2,6 +2,7 @@ import asyncio
 from itertools import chain
 import logging
 from datetime import datetime
+from re import I
 from typing import Any
 
 from pydantic import BaseModel
@@ -38,49 +39,181 @@ class WorkflowRunner:
             workflow=self.workflow
         )
 
+    def _evaluate_edge_conditions_from_edge(
+        self, edge: Edge, context: WorkflowContext
+    ) -> bool:
+        """Method that evaluates the edge condition based on an edge, 
+        logs the result and returns the result of the edge condition evaluation"""
+
+        step_execution = self.workflow_executions.step_executions.get(
+            edge.from_step
+        )
+
+        if edge.condition.evaluate_edge_condition(
+            step_output=step_execution.result, context=context
+        ):
+            logger.info(
+                f"Edge condition '{edge.condition}', passed, next step might be '{edge.to_step}'"
+            )
+            return True
+        else:
+            logger.info(
+                f"Edge condition '{edge.condition}' did not pass, "
+                f"meaning that '{edge.to_step}' won't be executed through this edge"
+            )
+            return False
+    def _get_step_activation(
+        self, step: BaseStep, context: WorkflowContext
+    ) -> bool:
+        """
+        Method that checks whether a step should be executed.
+
+        If a step has multiple incoming edges, the edges with the type 'always'
+        have less priority than the other ones.
+        """
+
+        always_true_condition_encountered: bool = False
+
+        for edge in self.workflow.edges:
+            if edge.to_step == step.step_id:
+
+                step_execution = self.workflow_executions.step_executions.get(
+                    edge.from_step
+                )
+
+                # The source step must have completed successfully.
+                if (
+                    step_execution is None
+                    or step_execution.status != StepStatus.COMPLETED
+                ):
+                    continue
+
+                if self._evaluate_edge_conditions_from_edge(
+                    edge=edge, context=context
+                ):
+                    if edge.condition.type == "always":
+                        always_true_condition_encountered = True
+                    else:
+                        return True
+                else: # if it fails, it is not type = always and a condition failed so it does not get executed
+                    return False
+
+        if always_true_condition_encountered:
+            return True
+
+        return False
+
+
     def _get_next_steps(
-        self, prev_step_id: str, result: Any, context: WorkflowContext
-    ) -> list[str]:
-        """Method that derives the next step from the current step and the edges"""
-        next_steps: list[str] = []
+        self, prev_step_id: str, context: WorkflowContext
+    ) -> list[BaseStep]:
+        """Method that derives the next steps from the current step and the edges."""
+
+        next_steps: list[BaseStep] = []
+
         for edge in self.workflow.edges:
             if edge.from_step == prev_step_id:
                 logger.debug(f"Found {prev_step_id} to {edge.to_step}")
-                dependencies = self.workflow._get_step_dependencies(edge.to_step)
 
+                target_step = self.workflow.steps[edge.to_step]
+
+                # Don't process steps that have already been resolved.
+                if target_step.get_status() in StepStatus.get_resolved_outcomes():
+                    continue
+
+                dependencies = self.workflow._get_step_dependencies(
+                    edge.to_step
+                )
+
+                while True:
+                    required_dependencies = self.workflow._get_required_dependencies(
+                        dependencies=dependencies
+                    )
+
+                    unresolved = set(
+                        chain.from_iterable(required_dependencies.values())
+                    )
+
+                    if not unresolved:
+                        break
+
+                    resolved_inactive_dependency = False
+
+                    for dependency in unresolved:
+
+                        # Only evaluate the condition if all direct dependencies
+                        # of this dependency have already been resolved.
+                        dependency_dependencies = (
+                            self.workflow._get_step_dependencies(
+                                dependency.step_id
+                            )
+                        )
+
+                        if all(
+                            dep.get_status() in StepStatus.get_resolved_outcomes()
+                            for dep in dependency_dependencies
+                        ):
+                            if not self._get_step_activation(
+                                step=dependency, context=context
+                            ):
+                                dependency.set_status(
+                                    StepStatus.CONDITION_NOT_MET
+                                )
+                                self._post_process_step(dependency)
+                                resolved_inactive_dependency = True
+
+                    # Recalculate the required dependencies because some
+                    # dependencies may have received a resolved status.
+                    if resolved_inactive_dependency:
+                        continue
+
+                    next_steps.extend(unresolved)
+                    break
+
+                # If all dependencies have been resolved, check whether the target
+                # itself should be executed.
                 required_dependencies = self.workflow._get_required_dependencies(
                     dependencies=dependencies
                 )
-                if any(required_dependencies.values()):
-                    self.workflow.steps.get(edge.to_step).set_status(StepStatus.AWAITING_DEPENDENCY) # can't be the first step cause an edge points to it
-                    logger.debug(f"Set {edge.to_step} to awaiting_dependency cause it still has unresolved dependencies")
-                logger.debug(f"The required dependencies of the dependencies '{dependencies}' are: {required_dependencies}")
-                for dependency in set(chain.from_iterable(required_dependencies.values())):
-                    logger.debug(
-                        f"The step '{dependency.step_id}' is a dependency of the next step '{edge.to_step}'. '{dependency.step_id}' will be executed before {edge.to_step}"
-                    )
-                    next_steps.append(dependency.step_id)
 
-                if edge.condition.evaluate_edge_condition(
-                    step_output=result, context=context
-                ):
-                    logger.info(
-                        f"Edge condition '{edge.condition}', passed, next step will be '{edge.to_step}'"
-                    )
-                    next_steps.append(edge.to_step)
-                    # the step will be processed -> no need for post processing it
+                unresolved = set(
+                    chain.from_iterable(required_dependencies.values())
+                )
+
+                if not unresolved:
+                    if self._get_step_activation(
+                        step=target_step, context=context
+                    ): # what happens here
+                        next_steps.append(target_step)
+                    else:
+                        target_step.set_status(StepStatus.CONDITION_NOT_MET)
+                        self._post_process_step(target_step)
                 else:
-                    logger.info(
-                        f"Edge condition {edge.condition}, did not pass because  meaning that '{edge.to_step}' won't be executed"
-                    )
-                    self.workflow.steps[edge.to_step].set_status(
-                        status=StepStatus.CONDITION_NOT_MET
-                    )
-                    self._post_process_step(self.workflow.steps[edge.to_step])
+                    logger.debug(f"The step '{target_step.step_id}' that was intended to run will "
+                        f"not run now because it still has unresolved dependencies: '{unresolved}'")
 
-        logger.debug(f"Next steps to execute: {next_steps}")
+        if not next_steps:
+            return []
+        # Remove all dependencies of dependencies from the final list,
+        # so that all steps that can execute concurrently are returned.
+        while next_steps:
+            nested_dependencies: dict[str, list[BaseStep]] = self.workflow._get_required_dependencies(next_steps)
+            for requirement, nested_deps in nested_dependencies.items():
+                for nested_dep in nested_deps:
+                    if nested_dep.step_id == requirement:
+                        if nested_dep in nested_dependencies[requirement]:
+                            nested_dependencies[requirement].remove(nested_dep)
+                        if nested_dep in nested_deps:
+                            nested_deps.remove(nested_dep)
+                if nested_deps:
+                    next_steps.remove(self.workflow.steps[requirement])
+                    logger.debug(f"Removing {requirement} from next steps because it is required by {nested_deps}")
+            if not any(nested_dependencies.values()):
+                return next_steps
+        if not all(step.get_status() in StepStatus.get_resolved_outcomes() for step in self.workflow.steps.values()):
+            raise ValueError(f"It seems that the workflow has a structural issue. There are steps that are not completed even though no next steps exist.")
+        logger.debug(f"Left while loop")
         return next_steps
-
     def _get_completed_dependencies(self, step: BaseStep) -> list[BaseStep]:
         """Predecessors whose output is usable as input for ``step``."""
         return [
@@ -267,8 +400,7 @@ class WorkflowRunner:
                     logger.info("there is no next step id to execute, exiting run")
                     self.workflow_executions.set_status(status=WorkflowStatus.COMPLETED)
                     logger.debug(f"Step status of first step '{self.workflow.first_step.step_id}': {self.workflow.first_step.get_status()}")
-                    for step in self.workflow.steps:
-                        logger.debug(f"Workflow execution of workflow '{self.workflow.metadata.name}': {self.workflow_executions}")
+                    logger.debug(f"Workflow execution of workflow '{self.workflow.metadata.name}': {repr(self.workflow_executions)}")
                     return self.workflow_executions.step_executions[last_step.step_id].result
 
         except KeyboardInterrupt:
@@ -303,11 +435,11 @@ async def square(input: dict, _) -> Number:
     return Number(value=input["subtract_five"].value ** 2)
 
 
-async def quadruple(input: dict, _) -> Number:
-    if "square" in input.keys():
-        return Number(value=input["square"].value * 4)
-    if "double" in input.keys():
-        return Number(value=input["double"].value * 4)
+async def quadruple(input: dict[str, Number], _) -> Number:
+    current_value: int = 0
+    for key in input:
+        current_value += input[key].value 
+    return Number(value=current_value * 4)
 
 
 async def main():
@@ -362,43 +494,13 @@ async def main():
     workflow.add_step(quadruple_step)
 
 
-    workflow.add_edge(
-        Edge(
-            from_step="add_ten",
-            to_step="double",
-            condition=EdgeCondition(
-                type="output_based",
-                field="value",
-                operator=">=",
-                value=20,
-            ),
-        )
-    )
+    workflow.add_edge(Edge(from_step="add_ten", to_step="subtract_five"))
+    workflow.add_edge(Edge(from_step="add_ten", to_step="double"))
 
-    workflow.add_edge(
-        Edge(
-            from_step="add_ten",
-            to_step="subtract_five",
-            condition=EdgeCondition(
-                type="output_based",
-                field="value",
-                operator="<",
-                value=20,
-            ),
-        )
-    )
+    workflow.add_edge(Edge(from_step="subtract_five", to_step="square"))
 
-    workflow.add_edge(
-        Edge(from_step="double", to_step="quadruple")
-    )
-
-    workflow.add_edge(
-        Edge(from_step="subtract_five", to_step="square")
-    )
-
-    workflow.add_edge(
-        Edge(from_step="square", to_step="quadruple")
-    )
+    workflow.add_edge(Edge(from_step="square", to_step="quadruple"))
+    workflow.add_edge(Edge(from_step="double", to_step="quadruple"))
 
 
     runner = WorkflowRunner(workflow)
