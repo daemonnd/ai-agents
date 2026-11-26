@@ -244,22 +244,22 @@ class WorkflowRunner:
                 context=self.context,
             )
 
-            last_step_id = self.workflow.first_step.step_id
-            next_step_ids: list[
-                str
+            last_step = self.workflow.first_step
+            next_steps: list[
+                BaseStep
             ] = []  # for the case that there are no other steps but the first one
 
             while True:
-                next_step_ids: list[str] = self._get_next_steps(
-                    prev_step_id=last_step_id, result=self.workflow_executions.step_executions[last_step_id].result, context=self.context
+                next_steps: list[BaseStep] = self._get_next_steps(
+                    prev_step_id=last_step.step_id, context=self.context
                 )
-                if next_step_ids:
-                    for step_id in next_step_ids:
+                if next_steps:
+                    for step in next_steps:
                         await self._execute_one_step(
-                            step=self.workflow.steps[step_id],
+                            step=step,
                             context=self.context,
                         )
-                    last_step_id = next_step_ids[
+                    last_step = next_steps[
                         -1
                     ]  # take the last executed one from the list
 
@@ -268,8 +268,8 @@ class WorkflowRunner:
                     self.workflow_executions.set_status(status=WorkflowStatus.COMPLETED)
                     logger.debug(f"Step status of first step '{self.workflow.first_step.step_id}': {self.workflow.first_step.get_status()}")
                     for step in self.workflow.steps:
-                        logger.debug(f"Step status of '{step}' {self.workflow.steps.get(step).get_status()}")
-                    return self.workflow_executions.step_executions[last_step_id].result
+                        logger.debug(f"Workflow execution of workflow '{self.workflow.metadata.name}': {self.workflow_executions}")
+                    return self.workflow_executions.step_executions[last_step.step_id].result
 
         except KeyboardInterrupt:
             self.workflow_executions.set_status(status=WorkflowStatus.CANCELLED)
