@@ -119,6 +119,7 @@ class WorkflowRunner:
 
                 # Don't process steps that have already been resolved.
                 if target_step.get_status() in StepStatus.get_resolved_outcomes():
+                    logger.debug(f"Skipping step '{target_step.step_id}' because it is already resolved and has the status '{target_step.get_status().value}'.")
                     continue
 
                 dependencies = self.workflow._get_step_dependencies(
@@ -156,6 +157,8 @@ class WorkflowRunner:
                             if not self._get_step_activation(
                                 step=dependency, context=context
                             ):
+                                logger.debug(
+                                    f"Dependency '{dependency.step_id}' is is inactive, skipping",)
                                 dependency.set_status(
                                     StepStatus.CONDITION_NOT_MET
                                 )
@@ -401,6 +404,8 @@ class WorkflowRunner:
                     self.workflow_executions.set_status(status=WorkflowStatus.COMPLETED)
                     logger.debug(f"Step status of first step '{self.workflow.first_step.step_id}': {self.workflow.first_step.get_status()}")
                     logger.debug(f"Workflow execution of workflow '{self.workflow.metadata.name}': {repr(self.workflow_executions)}")
+                    for step in self.workflow.steps:
+                        logger.debug(self.workflow.steps[step])
                     return self.workflow_executions.step_executions[last_step.step_id].result
 
         except KeyboardInterrupt:
@@ -494,19 +499,51 @@ async def main():
     workflow.add_step(quadruple_step)
 
 
-    workflow.add_edge(Edge(from_step="add_ten", to_step="subtract_five"))
-    workflow.add_edge(Edge(from_step="add_ten", to_step="double"))
+    
 
-    workflow.add_edge(Edge(from_step="subtract_five", to_step="square"))
+    workflow.add_edge(
+        Edge(
+            from_step="add_ten",
+            to_step="double",
+            condition=EdgeCondition(
+                type="output_based",
+                field="value",
+                operator=">=",
+                value=20,
+            ),
+        )
+    )
 
-    workflow.add_edge(Edge(from_step="square", to_step="quadruple"))
-    workflow.add_edge(Edge(from_step="double", to_step="quadruple"))
+    workflow.add_edge(
+        Edge(
+            from_step="add_ten",
+            to_step="subtract_five",
+            condition=EdgeCondition(
+                type="output_based",
+                field="value",
+                operator="<",
+                value=20,
+            ),
+        )
+    )
 
+    workflow.add_edge(
+        Edge(from_step="double", to_step="quadruple")
+    )
+
+    workflow.add_edge(
+        Edge(from_step="subtract_five", to_step="square")
+    )
+
+    workflow.add_edge(
+        Edge(from_step="square", to_step="quadruple")
+    )
 
     runner = WorkflowRunner(workflow)
 
+    #raise NONIMPLEMENTEDERROR("post_process_step is probably giving the wrong status dependency_skipped to quadruple")
     
-    return await runner.run(first_input_data=Number(value=20))
+    return await runner.run(first_input_data=Number(value=5))
 
 
 if __name__ == "__main__":

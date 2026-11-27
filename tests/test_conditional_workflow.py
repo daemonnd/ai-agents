@@ -140,6 +140,39 @@ def make_conditional_workflow(calls=None, *, high_operator=">="):
     }
 
 
+def test_parallel_workflow_executes_all_branches_and_converges():
+    # this one assumes quadruple is correct
+    calls = []
+    workflow, steps = make_conditional_workflow(calls)
+
+    # Replace the conditional edges with unconditional edges.
+    workflow.edges.clear()
+
+    workflow.add_edge(Edge(from_step="add_ten", to_step="subtract_five"))
+    workflow.add_edge(Edge(from_step="add_ten", to_step="double"))
+
+    workflow.add_edge(Edge(from_step="subtract_five", to_step="square"))
+
+    workflow.add_edge(Edge(from_step="square", to_step="quadruple"))
+    workflow.add_edge(Edge(from_step="double", to_step="quadruple"))
+
+    runner = WorkflowRunner(workflow)
+    result = asyncio.run(
+        runner.run(first_input_data=Number(value=20))
+    )
+
+    assert result == Number(value=2740)
+
+    assert sorted(step for step, _ in calls) == sorted([
+        "add_ten",
+        "subtract_five",
+        "double",
+        "square",
+        "quadruple",
+    ])
+
+    assert len(calls) == 5
+
 def test_low_value_takes_lower_branch_and_converges():
     calls = []
     workflow, steps = make_conditional_workflow(calls)
