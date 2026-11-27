@@ -357,13 +357,11 @@ class WorkflowRunner:
                         if target_status:
                             self.workflow.steps.get(descendant).set_status(target_status) # the first step can't be a descendant so it works
                     elif len(descendant_step_dependencies) > 1:
-                        print(f"executed elif branch with descendant_step_dependencies: {descendant_step_dependencies} on step {step.step_id}")
                         required_dependencies: int = 0
                         for dependency in descendant_step_dependencies:
                             if dependency.get_status() not in StepStatus.get_resolved_outcomes():
                                 required_dependencies += 1
                         if required_dependencies == 0:
-                            print(f"there is one no required dependency, setting status of {self.workflow.steps.get(descendant)} to {target_status}")
                             if target_status:
                                 self.workflow.steps.get(descendant).set_status(target_status)
 
@@ -403,11 +401,8 @@ class WorkflowRunner:
                     prev_step_id=last_step.step_id, context=self.context
                 )
                 if next_steps:
-                    for step in next_steps:
-                        await self._execute_one_step(
-                            step=step,
-                            context=self.context,
-                        )
+                    tasks = [self._execute_one_step(step=step, context=self.context) for step in next_steps]
+                    await asyncio.gather(*tasks)
                     last_step = next_steps[
                         -1
                     ]  # take the last executed one from the list
@@ -416,7 +411,7 @@ class WorkflowRunner:
                     logger.info("there is no next step id to execute, exiting run")
                     self.workflow_executions.set_status(status=WorkflowStatus.COMPLETED)
                     logger.debug(f"Step status of first step '{self.workflow.first_step.step_id}': {self.workflow.first_step.get_status()}")
-                    logger.debug(f"Workflow execution of workflow '{self.workflow.metadata.name}': {repr(self.workflow_executions)}")
+                    logger.debug(f"Workflow execution of workflow '{self.workflow.metadata.name}': {self.workflow_executions}")
                     for step in self.workflow.steps:
                         logger.debug(self.workflow.steps[step])
                     return self.workflow_executions.step_executions[last_step.step_id].result
@@ -521,6 +516,15 @@ def use_boundary_value_uses_greater_than_or_equal_branch(workflow: Workflow):
     workflow.add_edge(Edge(from_step="subtract_five", to_step="square"))
     workflow.add_edge(Edge(from_step="square", to_step="quadruple"))
 
+def use_parallel_execution(workflow: Workflow) -> None:
+    workflow.add_edge(Edge(from_step="add_ten", to_step="subtract_five"))
+    workflow.add_edge(Edge(from_step="add_ten", to_step="double"))
+
+    workflow.add_edge(Edge(from_step="subtract_five", to_step="square"))
+
+    workflow.add_edge(Edge(from_step="square", to_step="quadruple"))
+    workflow.add_edge(Edge(from_step="double", to_step="quadruple"))
+
 async def main():
     workflow = Workflow(
         metadata=WorkflowMetadata(name="fan-out and fan-in dependency test")
@@ -573,13 +577,14 @@ async def main():
     workflow.add_step(quadruple_step)
 
 
-    use_no_matching_condition_executes_neither_branch(workflow)
+    
     
 
+    use_parallel_execution(workflow)
 
     runner = WorkflowRunner(workflow)
 
-    return await runner.run(first_input_data=Number(value=10))
+    return await runner.run(first_input_data=Number(value=20))
 
 
     
