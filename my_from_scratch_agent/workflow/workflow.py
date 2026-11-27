@@ -87,6 +87,17 @@ class Workflow:
         else:
             return step_id
 
+    def _get_full_linear_descendants(self, step_id: str) -> list[str]:
+        """
+        Returns a list of the full linear descendants that also don't have any other ancestors,
+        meaning all the descendants that are in the same linear path as the given step
+        """
+        full_linear_descendants: list[str] = []
+        linear_descendants: list[str] = self._get_linear_descendants(step_id)
+        for descendant in linear_descendants:
+            if len(self._get_step_dependencies(descendant)) == 1:
+                full_linear_descendants.append(descendant)
+        return full_linear_descendants
     def _get_linear_descendants(self, step_id: str) -> list[str]:
         """
         Returns a list of all step IDs in the linear chain starting from

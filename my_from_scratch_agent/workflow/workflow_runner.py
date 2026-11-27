@@ -351,7 +351,7 @@ class WorkflowRunner:
                 target_status: StepStatus | None = (
                     StepStatus.get_propagation_mapping().get(step.get_status())
                 )
-                for descendant in self.workflow._get_linear_descendants(step.step_id):
+                for descendant in self.workflow._get_full_linear_descendants(step.step_id):
                     if target_status:
                         self.workflow.steps.get(descendant).set_status(target_status) # the first step can't be a descendant so it works
 
@@ -444,7 +444,7 @@ async def quadruple(input: dict[str, Number], _) -> Number:
     current_value: int = 0
     for key in input:
         current_value += input[key].value 
-    return Number(value=current_value * 4)
+    return Number(value=current_value*4)
 
 
 async def main():
@@ -541,8 +541,6 @@ async def main():
 
     runner = WorkflowRunner(workflow)
 
-    #raise NONIMPLEMENTEDERROR("post_process_step is probably giving the wrong status dependency_skipped to quadruple")
-    
     return await runner.run(first_input_data=Number(value=5))
 
 
