@@ -346,14 +346,27 @@ class WorkflowRunner:
             if all(
                 dependency.get_status()
                 in StepStatus.get_resolved_outcomes()  # the direct dependencies are all resolved
-                for dependency in step_dependencies  # so linear ancestors of the step can' execute anymore
+                for dependency in step_dependencies  # so linear ancestors of the step can't execute anymore
             ):  # all the direct dependencies have resolved status -> propagate FAILED or CONDITION_NOT_MET to the descendant steps
                 target_status: StepStatus | None = (
                     StepStatus.get_propagation_mapping().get(step.get_status())
                 )
-                for descendant in self.workflow._get_full_linear_descendants(step.step_id):
-                    if target_status:
-                        self.workflow.steps.get(descendant).set_status(target_status) # the first step can't be a descendant so it works
+                for descendant in self.workflow._get_linear_descendants(step.step_id):
+                    descendant_step_dependencies: list[BaseStep] = self.workflow._get_step_dependencies(descendant)
+                    if len(descendant_step_dependencies) == 1:
+                        if target_status:
+                            self.workflow.steps.get(descendant).set_status(target_status) # the first step can't be a descendant so it works
+                    elif len(descendant_step_dependencies) > 1:
+                        print(f"executed elif branch with descendant_step_dependencies: {descendant_step_dependencies} on step {step.step_id}")
+                        required_dependencies: int = 0
+                        for dependency in descendant_step_dependencies:
+                            if dependency.get_status() not in StepStatus.get_resolved_outcomes():
+                                required_dependencies += 1
+                        if required_dependencies == 0:
+                            print(f"there is one no required dependency, setting status of {self.workflow.steps.get(descendant)} to {target_status}")
+                            if target_status:
+                                self.workflow.steps.get(descendant).set_status(target_status)
+
 
 
     async def run(self, first_input_data: Any):
@@ -446,6 +459,67 @@ async def quadruple(input: dict[str, Number], _) -> Number:
         current_value += input[key].value 
     return Number(value=current_value*4)
 
+def use_no_matching_condition_executes_neither_branch(workflow: Workflow) -> None:
+    workflow.add_edge(
+        Edge(
+            from_step="add_ten",
+            to_step="double",
+            condition=EdgeCondition(
+                type="output_based",
+                field="value",
+                operator=">",
+                value=20,
+            ),
+        )
+    )
+    workflow.add_edge(
+        Edge(
+            from_step="add_ten",
+            to_step="subtract_five",
+            condition=EdgeCondition(
+                type="output_based",
+                field="value",
+                operator="<",
+                value=20,
+            ),
+        )
+    )
+
+    # These are deliberately unconditional edges.
+    workflow.add_edge(Edge(from_step="double", to_step="quadruple"))
+    workflow.add_edge(Edge(from_step="subtract_five", to_step="square"))
+    workflow.add_edge(Edge(from_step="square", to_step="quadruple"))
+
+def use_boundary_value_uses_greater_than_or_equal_branch(workflow: Workflow):
+    workflow.add_edge(
+        Edge(
+            from_step="add_ten",
+            to_step="double",
+            condition=EdgeCondition(
+                type="output_based",
+                field="value",
+                operator=">=",
+                value=20,
+            ),
+        )
+    )
+    workflow.add_edge(
+        Edge(
+            from_step="add_ten",
+            to_step="subtract_five",
+            condition=EdgeCondition(
+                type="output_based",
+                field="value",
+                operator="<",
+                value=20,
+            ),
+        )
+    )
+
+    # These are deliberately unconditional edges.
+    workflow.add_edge(Edge(from_step="double", to_step="quadruple"))
+    workflow.add_edge(Edge(from_step="subtract_five", to_step="square"))
+    workflow.add_edge(Edge(from_step="square", to_step="quadruple"))
 
 async def main():
     workflow = Workflow(
@@ -486,7 +560,7 @@ async def main():
 
     quadruple_step = FunctionStep(
         step_id="quadruple",
-        input_type={"double": Number, "square": Number},
+        input_type={"double": Number,"square": Number},
         output_type=Number,
         metadata=StepMetadata(name="Quadruple"),
         func=quadruple,
@@ -499,49 +573,16 @@ async def main():
     workflow.add_step(quadruple_step)
 
 
+    use_no_matching_condition_executes_neither_branch(workflow)
     
 
-    workflow.add_edge(
-        Edge(
-            from_step="add_ten",
-            to_step="double",
-            condition=EdgeCondition(
-                type="output_based",
-                field="value",
-                operator=">=",
-                value=20,
-            ),
-        )
-    )
-
-    workflow.add_edge(
-        Edge(
-            from_step="add_ten",
-            to_step="subtract_five",
-            condition=EdgeCondition(
-                type="output_based",
-                field="value",
-                operator="<",
-                value=20,
-            ),
-        )
-    )
-
-    workflow.add_edge(
-        Edge(from_step="double", to_step="quadruple")
-    )
-
-    workflow.add_edge(
-        Edge(from_step="subtract_five", to_step="square")
-    )
-
-    workflow.add_edge(
-        Edge(from_step="square", to_step="quadruple")
-    )
 
     runner = WorkflowRunner(workflow)
 
-    return await runner.run(first_input_data=Number(value=5))
+    return await runner.run(first_input_data=Number(value=10))
+
+
+    
 
 
 if __name__ == "__main__":
