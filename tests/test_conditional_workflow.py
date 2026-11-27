@@ -47,9 +47,10 @@ async def square(x: dict[str, Number], _) -> Number:
 
 async def quadruple(x: dict[str, Number], _) -> Number:
     # This function raises the value to the fourth power.
-    if "square" in x:
-        return Number(value=x["square"].value**4)
-    return Number(value=x["double"].value**4)
+    current_value: int = 0
+    for key in x:
+        current_value += x[key].value 
+    return Number(value=current_value*4)
 
 
 def make_step(step_id: str, input_type, func) -> FunctionStep:
@@ -180,8 +181,8 @@ def test_low_value_takes_lower_branch_and_converges():
     runner = WorkflowRunner(workflow)
     result = asyncio.run(runner.run(first_input_data=Number(value=5)))
 
-    # 5 -> 15 -> 10 -> 100 -> 100**4
-    assert result == Number(value=100_000_000)
+    # 5 -> 15 -> 10 -> 100 -> 100*4
+    assert result == Number(value=400)
     assert calls == [
         ("add_ten", 5),
         ("subtract_five", 15),
@@ -202,8 +203,8 @@ def test_high_value_takes_upper_branch_and_marks_inactive_descendants():
     runner = WorkflowRunner(workflow)
     result = asyncio.run(runner.run(first_input_data=Number(value=20)))
 
-    # 20 -> 30 -> 60 -> 60**4
-    assert result == Number(value=12_960_000)
+    # 20 -> 30 -> 60 -> 60*4
+    assert result == Number(value=240)
     assert calls == [
         ("add_ten", 20),
         ("double", 30),
@@ -224,7 +225,7 @@ def test_boundary_value_uses_greater_than_or_equal_branch():
     # add_ten turns 10 into exactly 20; the >= edge must be selected.
     result = asyncio.run(runner.run(first_input_data=Number(value=10)))
 
-    assert result == Number(value=2_560_000)
+    assert result == Number(value=160)
     assert ("double", 20) in calls
     assert not any(step_id in {"subtract_five", "square"} for step_id, _ in calls)
     assert steps["double"].get_status() == StepStatus.COMPLETED
