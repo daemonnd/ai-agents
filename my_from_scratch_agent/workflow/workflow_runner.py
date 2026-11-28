@@ -29,6 +29,9 @@ class NoInputError(Exception):
     def __init__(self, *args: object) -> None:
         super().__init__(*args)
 
+class WorkflowDeadlock(Exception):
+    def __init__(self, *args: object) -> None:
+        super().__init__(*args)
 class WorkflowRunner:
     def __init__(
         self, workflow: Workflow, start_context: WorkflowContext | None = None
@@ -371,6 +374,7 @@ class WorkflowRunner:
                                 self.workflow.steps.get(descendant).set_status(target_status)
 
 
+
     async def run(self, first_input_data: Any):
         self.workflow.validate()
         logger.info(f"starting workflow {self.workflow.metadata.name}")
@@ -416,7 +420,7 @@ class WorkflowRunner:
                         if task in done:
                             running_tasks.remove(task)
                             last_step = task.result()
-                            continue
+                            continue # so it does not get to the next if conditions
                 if not any(step.get_status() not in StepStatus.get_resolved_outcomes() for step in self.workflow.steps.values()):
                     logger.info("there is no next step id to execute, exiting run")
                     self.workflow_executions.set_status(status=WorkflowStatus.COMPLETED)
@@ -425,6 +429,18 @@ class WorkflowRunner:
                     for step in self.workflow.steps:
                         logger.debug(self.workflow.steps[step])
                     return self.workflow_executions.step_executions[last_step.step_id].result
+                if not running_tasks and any(step.get_status() == StepStatus.PENDING for step in self.workflow.steps.values()) and not next_steps:
+                    for step in self.workflow.steps:
+                        logger.debug(self.workflow.steps[step])
+                    pending_steps = [
+                        step.step_id
+                        for step in self.workflow.steps.values()
+                        if step.get_status() == StepStatus.PENDING
+                    ]
+                    raise WorkflowDeadlock(
+                        f"No running tasks or executable next steps, "
+                        f"but these steps remain pending: {pending_steps}"
+                    )
 
         except KeyboardInterrupt:
             self.workflow_executions.set_status(status=WorkflowStatus.CANCELLED)
@@ -472,6 +488,8 @@ async def triple(input: dict[str, Number], _) -> Number:
     await asyncio.sleep(3)
     return Number(value=input["add_ten"].value * 3)
 
+async def not_reachable(input: dict[str, Number], _) -> Number:
+    return Number(value=0)
 #completion_barrier = asyncio.Barrier(2)
 #async def double(input: dict[str, Number], _) -> Number:
     #result = Number(value=input["add_ten"].value * 2)
@@ -492,6 +510,42 @@ async def triple(input: dict[str, Number], _) -> Number:
     #logger.debug("triple released from synchronization barrier")
     #return result
 
+def use_deadlock(workflow: Workflow) -> None:
+    workflow.add_step(
+        FunctionStep(
+            step_id="after_quadruple",
+            input_type={"quadruple": Number},
+            output_type=Number,
+            metadata=StepMetadata(name="not reachable"),
+            func=not_reachable
+        )
+    )
+    workflow.add_edge(Edge(from_step="quadruple", to_step="after_quadruple", condition=EdgeCondition(
+        type="state_based",
+        field="none",
+        operator="==",
+        value=True
+    )))
+    workflow.add_step(
+        FunctionStep(
+            step_id="opt1",
+            input_type={"after_quadruple": Number},
+            output_type=Number,
+            metadata=StepMetadata(name="opt1"),
+            func=not_reachable
+        )
+    )
+    workflow.add_step(
+        FunctionStep(
+            step_id="opt2",
+            input_type={"after_quadruple": Number},
+            output_type=Number,
+            metadata=StepMetadata(name="opt2"),
+            func=not_reachable
+        )
+    )
+    workflow.add_edge(Edge(from_step="after_quadruple", to_step="opt1"))
+    workflow.add_edge(Edge(from_step="after_quadruple", to_step="opt2"))
 def use_no_matching_condition_executes_neither_branch(workflow: Workflow) -> None:
     workflow.add_edge(
         Edge(
@@ -638,6 +692,7 @@ async def main():
     
 
     use_three_branches(workflow)
+    use_deadlock(workflow)
 
     runner = WorkflowRunner(workflow)
 
