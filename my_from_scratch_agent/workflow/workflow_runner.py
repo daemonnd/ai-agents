@@ -130,7 +130,6 @@ class WorkflowRunner:
                     required_dependencies = self.workflow._get_required_dependencies(
                         dependencies=dependencies
                     )
-                    print(f"required dependencies of {edge.to_step}: {required_dependencies}")
 
                     unresolved = set(
                         chain.from_iterable(required_dependencies.values())
@@ -270,7 +269,6 @@ class WorkflowRunner:
                 status=StepStatus.NO_INPUT_RECEIVED,
                   error_message=f"No input from previous step got " \
                             f"collected, cancelling step execution of step '{step.step_id}'")
-            print(step.get_error())
             step_execution = StepExecution(
                 step_id=step.step_id,
                 status=step._status,
@@ -373,7 +371,6 @@ class WorkflowRunner:
                                 self.workflow.steps.get(descendant).set_status(target_status)
 
 
-
     async def run(self, first_input_data: Any):
         self.workflow.validate()
         logger.info(f"starting workflow {self.workflow.metadata.name}")
@@ -403,20 +400,24 @@ class WorkflowRunner:
                 BaseStep
             ] = []  # for the case that there are no other steps but the first one
 
+            running_tasks: set[asyncio.Task] = set()
             while True:
                 next_steps: list[BaseStep] = self._get_next_steps(
                     prev_step_id=last_step.step_id, context=self.context
                 )
-                if next_steps:
-                    tasks: list[asyncio.Task] = []
-                    for step in next_steps:
-                        tasks.append(asyncio.create_task(self._execute_one_step(step=step, context=self.context)))
-                    done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
-                    for task in tasks:
+                for step in next_steps:
+                    if step.get_status() == StepStatus.RUNNING:
+                        logger.debug(f"Not executing '{step.step_id}' because it is already running.")
+                        continue
+                    running_tasks.add(asyncio.create_task(self._execute_one_step(step=step, context=self.context)))
+                if running_tasks:
+                    done, pending = await asyncio.wait(running_tasks, return_when=asyncio.FIRST_COMPLETED)
+                    for task in list(running_tasks):
                         if task in done:
-                            last_step = task.result()
-                            break
-                else:
+                            running_tasks.remove(task)
+                            last_step =  task.result()
+                            continue
+                if not any(step.get_status() not in StepStatus.get_resolved_outcomes() for step in self.workflow.steps.values()):
                     logger.info("there is no next step id to execute, exiting run")
                     self.workflow_executions.set_status(status=WorkflowStatus.COMPLETED)
                     logger.debug(f"Step status of first step '{self.workflow.first_step.step_id}': {self.workflow.first_step.get_status()}")
