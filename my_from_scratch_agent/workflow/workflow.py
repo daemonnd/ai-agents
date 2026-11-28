@@ -87,6 +87,17 @@ class Workflow:
         else:
             return step_id
 
+    def _get_full_linear_descendants(self, step_id: str) -> list[str]:
+        """
+        Returns a list of the full linear descendants that also don't have any other ancestors,
+        meaning all the descendants that are in the same linear path as the given step
+        """
+        full_linear_descendants: list[str] = []
+        linear_descendants: list[str] = self._get_linear_descendants(step_id)
+        for descendant in linear_descendants:
+            if len(self._get_step_dependencies(descendant)) == 1:
+                full_linear_descendants.append(descendant)
+        return full_linear_descendants
     def _get_linear_descendants(self, step_id: str) -> list[str]:
         """
         Returns a list of all step IDs in the linear chain starting from
@@ -162,6 +173,15 @@ class Workflow:
 
         return nested_dependencies
 
+    def _get_nested_required_dependencies(self, dependency: BaseStep) -> list[BaseStep]:
+        nested_required_dependencies: list[BaseStep] = []
+        for nested_dependency in self._get_step_dependencies(dependency.step_id):
+            if nested_dependency.get_status() not in StepStatus.get_resolved_outcomes():
+                nested_required_dependencies.append(nested_dependency)
+                nested_required_dependencies.extend(self._get_nested_required_dependencies(nested_dependency))
+            
+        return nested_required_dependencies
+
     def _get_required_dependencies(
         self, dependencies: list[BaseStep]
     ) -> dict[str, list[BaseStep]]:
@@ -170,7 +190,7 @@ class Workflow:
         it returns a list with all the required dependencies for the dependencies.
 
         Parameters:
-            - `dependencies` the list of dependencies to check whether they are required or are already resolved
+            - `dependencies` the list of dependencies to check whether they are required or are already resolved. Their dependencies are checked too.
 
         Returns:
             - a dict with the dependency step id as key and a list of all the required dependencies for the dependency
@@ -180,7 +200,8 @@ class Workflow:
             required_dependencies[dependency.step_id] = []
             if dependency.get_status() not in StepStatus.get_resolved_outcomes():
                 required_dependencies[dependency.step_id].append(dependency)
-            
+                required_dependencies[dependency.step_id].extend(self._get_nested_required_dependencies(dependency))
+                required_dependencies[dependency.step_id].reverse() # reverse it so the earlier ones are there earlier
         return required_dependencies
 
     def _get_step_dependencies(self, step_id: str) -> list[BaseStep]:

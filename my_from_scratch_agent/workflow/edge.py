@@ -5,6 +5,7 @@ from uuid import uuid7
 from pydantic import BaseModel, Field
 
 from my_from_scratch_agent.workflow.context import WorkflowContext
+from my_from_scratch_agent.workflow.steps import StepExecution
 
 logger = logging.getLogger(__name__)
 
