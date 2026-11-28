@@ -130,6 +130,7 @@ class WorkflowRunner:
                     required_dependencies = self.workflow._get_required_dependencies(
                         dependencies=dependencies
                     )
+                    print(f"required dependencies of {edge.to_step}: {required_dependencies}")
 
                     unresolved = set(
                         chain.from_iterable(required_dependencies.values())
@@ -239,11 +240,13 @@ class WorkflowRunner:
 
     async def _execute_one_step(
         self, step: BaseStep, context: WorkflowContext, input_data: Any | None = None,
-    ) -> Any:
+    ) -> BaseStep:
         """
         Method that handles the execution, state management and result collection of the step to be executed
         Parameters:
             - `input_data`: it is highly recommended to only use it if the step that is being executed is the first
+        Returns:
+            - the executed step
         """
         logger.info(f"Executing Step with ID '{step.step_id}'")
         step.set_status(status=StepStatus.RUNNING)
@@ -263,7 +266,11 @@ class WorkflowRunner:
                 expected_keys=expected_input_keys,
             )
         except NoInputError:
-            step.set_status(status=StepStatus.NO_INPUT_RECEIVED, error_message="No input from previous step got collected, cancelling step execution")
+            step.set_status(
+                status=StepStatus.NO_INPUT_RECEIVED,
+                  error_message=f"No input from previous step got " \
+                            f"collected, cancelling step execution of step '{step.step_id}'")
+            print(step.get_error())
             step_execution = StepExecution(
                 step_id=step.step_id,
                 status=step._status,
@@ -271,7 +278,7 @@ class WorkflowRunner:
                 input_type=step.input_type,
                 output_data=None,
                 output_type=type(None),
-                started_at=step._start_time,
+                started_at=step._start_time if hasattr(step, "_start_time") else None,
                 completed_at=datetime.now(),
                 error=step.get_error(),
             )
@@ -330,7 +337,7 @@ class WorkflowRunner:
             )
             logger.debug(f"Step Execution of executed step: {step_execution}")
             self._post_process_step(step)
-            return step_execution.output_data
+            return step
 
     def _post_process_step(self, step: BaseStep) -> None:
         """
@@ -401,12 +408,14 @@ class WorkflowRunner:
                     prev_step_id=last_step.step_id, context=self.context
                 )
                 if next_steps:
-                    tasks = [self._execute_one_step(step=step, context=self.context) for step in next_steps]
-                    await asyncio.gather(*tasks)
-                    last_step = next_steps[
-                        -1
-                    ]  # take the last executed one from the list
-
+                    tasks: list[asyncio.Task] = []
+                    for step in next_steps:
+                        tasks.append(asyncio.create_task(self._execute_one_step(step=step, context=self.context)))
+                    done, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+                    for task in tasks:
+                        if task in done:
+                            last_step = task.result()
+                            break
                 else:
                     logger.info("there is no next step id to execute, exiting run")
                     self.workflow_executions.set_status(status=WorkflowStatus.COMPLETED)
@@ -437,14 +446,17 @@ async def add_ten(x: Number, context: WorkflowContext) -> Number:
 
 
 async def double(input: dict, _) -> Number:
+    await asyncio.sleep(10)
     return Number(value=input["add_ten"].value * 2)
 
 
 async def subtract_five(input: dict, _) -> Number:
+    await asyncio.sleep(17)
     return Number(value=input["add_ten"].value - 5)
 
 
 async def square(input: dict, _) -> Number:
+    await asyncio.sleep(5)
     return Number(value=input["subtract_five"].value ** 2)
 
 

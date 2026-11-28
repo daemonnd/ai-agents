@@ -131,7 +131,7 @@ class StepExecution(BaseModel):
     input_type: InputType
     output_data: Any
     output_type: type
-    started_at: datetime
+    started_at: datetime | None
     completed_at: datetime
     status: StepStatus = StepStatus.PENDING
     error: str | None = None
@@ -166,7 +166,7 @@ class BaseStep(ABC):
         If the target status is FAILED, then error_message becomes relevant and will be set to _error
         """
         self._status = status
-        if status == StepStatus.FAILED:
+        if error_message:
             self._error = error_message
 
     def get_status(self) -> StepStatus:

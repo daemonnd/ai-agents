@@ -175,9 +175,11 @@ class Workflow:
 
     def _get_nested_required_dependencies(self, dependency: BaseStep) -> list[BaseStep]:
         nested_required_dependencies: list[BaseStep] = []
-        for nested_dependency in self._get_linear_ancestors(dependency.step_id):
-            if (self.steps.get(nested_dependency) or self.first_step).get_status() not in StepStatus.get_resolved_outcomes():
-                nested_required_dependencies.append(dependency)
+        for nested_dependency in self._get_step_dependencies(dependency.step_id):
+            if nested_dependency.get_status() not in StepStatus.get_resolved_outcomes():
+                nested_required_dependencies.append(nested_dependency)
+                nested_required_dependencies.extend(self._get_nested_required_dependencies(nested_dependency))
+            
         return nested_required_dependencies
 
     def _get_required_dependencies(
