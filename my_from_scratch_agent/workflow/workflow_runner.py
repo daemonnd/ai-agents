@@ -415,7 +415,7 @@ class WorkflowRunner:
                     for task in list(running_tasks):
                         if task in done:
                             running_tasks.remove(task)
-                            last_step =  task.result()
+                            last_step = task.result()
                             continue
                 if not any(step.get_status() not in StepStatus.get_resolved_outcomes() for step in self.workflow.steps.values()):
                     logger.info("there is no next step id to execute, exiting run")
@@ -447,17 +447,17 @@ async def add_ten(x: Number, context: WorkflowContext) -> Number:
 
 
 async def double(input: dict, _) -> Number:
-    await asyncio.sleep(10)
+    await asyncio.sleep(3)
     return Number(value=input["add_ten"].value * 2)
 
 
 async def subtract_five(input: dict, _) -> Number:
-    await asyncio.sleep(17)
+    await asyncio.sleep(8)
     return Number(value=input["add_ten"].value - 5)
 
 
 async def square(input: dict, _) -> Number:
-    await asyncio.sleep(5)
+    await asyncio.sleep(2)
     return Number(value=input["subtract_five"].value ** 2)
 
 
@@ -466,6 +466,31 @@ async def quadruple(input: dict[str, Number], _) -> Number:
     for key in input:
         current_value += input[key].value 
     return Number(value=current_value*4)
+
+
+async def triple(input: dict[str, Number], _) -> Number:
+    await asyncio.sleep(3)
+    return Number(value=input["add_ten"].value * 3)
+
+#completion_barrier = asyncio.Barrier(2)
+#async def double(input: dict[str, Number], _) -> Number:
+    #result = Number(value=input["add_ten"].value * 2)
+
+    #logger.debug("double reached synchronization barrier")
+    #await completion_barrier.wait()
+
+    #logger.debug("double released from synchronization barrier")
+    #return result
+
+
+#async def triple(input: dict[str, Number], _) -> Number:
+    #result = Number(value=input["add_ten"].value * 3)
+
+    #logger.debug("triple reached synchronization barrier")
+    #await completion_barrier.wait()
+
+    #logger.debug("triple released from synchronization barrier")
+    #return result
 
 def use_no_matching_condition_executes_neither_branch(workflow: Workflow) -> None:
     workflow.add_edge(
@@ -538,6 +563,16 @@ def use_parallel_execution(workflow: Workflow) -> None:
     workflow.add_edge(Edge(from_step="square", to_step="quadruple"))
     workflow.add_edge(Edge(from_step="double", to_step="quadruple"))
 
+def use_three_branches(workflow: Workflow) -> None:
+    workflow.add_edge(Edge(from_step="add_ten", to_step="subtract_five"))
+    workflow.add_edge(Edge(from_step="add_ten", to_step="double"))
+    workflow.add_edge(Edge(from_step="add_ten", to_step="triple"))
+
+    workflow.add_edge(Edge(from_step="subtract_five", to_step="square"))
+
+    workflow.add_edge(Edge(from_step="square", to_step="quadruple"))
+    workflow.add_edge(Edge(from_step="double", to_step="quadruple"))
+    workflow.add_edge(Edge(from_step="triple", to_step="quadruple"))
 async def main():
     workflow = Workflow(
         metadata=WorkflowMetadata(name="fan-out and fan-in dependency test")
@@ -577,10 +612,18 @@ async def main():
 
     quadruple_step = FunctionStep(
         step_id="quadruple",
-        input_type={"double": Number,"square": Number},
+        input_type={"double": Number,"square": Number, "triple": Number},
         output_type=Number,
         metadata=StepMetadata(name="Quadruple"),
         func=quadruple,
+    )
+
+    triple_step = FunctionStep(
+        step_id="triple",
+        input_type={"add_ten": Number},
+        output_type=Number,
+        metadata=StepMetadata(name="triple"),
+        func=triple,
     )
 
     workflow.add_first_step(add_ten_step)
@@ -588,12 +631,13 @@ async def main():
     workflow.add_step(double_step)
     workflow.add_step(square_step)
     workflow.add_step(quadruple_step)
+    workflow.add_step(triple_step)
 
 
     
     
 
-    use_parallel_execution(workflow)
+    use_three_branches(workflow)
 
     runner = WorkflowRunner(workflow)
 
